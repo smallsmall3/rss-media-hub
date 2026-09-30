@@ -42,7 +42,29 @@ jobs:
         run: python -m compileall -q app tests
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests -t . -v
+        run: |
+          set -o pipefail
+          # tee 一份到文件：下一步会把失败详情写进 job summary，
+          # 这样不用登录也能在 run 首页看到哪个测试挂了。
+          python -m unittest discover -s tests -t . -v 2>&1 | tee /tmp/test-output.txt
+
+      - name: 把测试结果写入 job summary（失败时也能直接看到）
+        if: always()
+        run: |
+          {
+            echo "## 测试输出（py${{ matrix.python-version }}）"
+            echo ""
+            echo '```'
+            if [ -f /tmp/test-output.txt ]; then
+              # 只留失败摘要 + 结尾统计，避免 summary 太长
+              grep -E '^(FAIL|ERROR):|AssertionError|^Ran |^OK|^FAILED' /tmp/test-output.txt | head -60 || true
+              echo "---- 最后 40 行 ----"
+              tail -40 /tmp/test-output.txt
+            else
+              echo "没有拿到测试输出"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: CLI smoke test（确认能正常启动，且会生成配置模板）
         run: |
@@ -50,6 +72,11 @@ jobs:
           export RMH_CONFIG_DIR="$PWD/.ci-config"
           export RMH_STATE_DIR="$PWD/.ci-state"
           export RMH_HEALTH_PORT=0
+          # 极短超时：CI 里配置的都是假地址，别为了等超时耗掉半分钟
+          export RMH_TG_BOT_TOKEN="1:CI"
+          export RMH_TG_CHAT_ID="1"
+          export RMH_HTTP_TIMEOUT=2
+          export RMH_POLL_INTERVAL=3600
           # 注意：不要用 `python -m app run` —— 那是常驻轮询循环，永不退出，
           # 会让这个 step 一直卡到超时。用 smoke：走完整启动流程后自己停下。
           python -m app --config-dir "$RMH_CONFIG_DIR" --state-dir "$RMH_STATE_DIR" smoke
@@ -58,6 +85,7 @@ jobs:
           python -m app --config-dir "$RMH_CONFIG_DIR" --state-dir "$RMH_STATE_DIR" --version
 
       - name: 部署自检（离线，确保 selfcheck 本身没坏）
+        if: always()
         run: |
           export RMH_CONFIG_DIR="$PWD/.ci-config"
           export RMH_STATE_DIR="$PWD/.ci-state"
