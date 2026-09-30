@@ -18,7 +18,7 @@ import signal
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Coroutine
 
 import httpx
 
@@ -27,14 +27,14 @@ from .config import ConfigError, Settings, Subscription, load_settings, save_sub
 from .db import Database, ItemRecord, SubState
 from .emby import EmbyClient, EmbyError
 from .notify import ItemView, Notifier
-from .poster import PosterResolver
+from .poster import PosterResolver, normalize_for_compare
 from .feedcheck import check_feeds, FeedsReport
 from .gapfill import GapFinder, GapReport
 from .libraryscan import LibraryScanner, ScanResult
 from .reconcile import ReconcileResult, Reconciler
 from .rss import FeedItem, fetch_feed
 from .telegram import TelegramSender
-from .tmdb import TmdbClient
+from .tmdb import TmdbClient, _year_of
 
 log = logging.getLogger("rss-media-hub")
 
@@ -143,6 +143,8 @@ class Hub:
         )
         # 网页 UI 实例，由 _web_server() 挂上；CLI 里可能为 None
         self.web: Any = None
+        # 后台附加任务（「已添加订阅」通知等），持引用防止被 GC 掉
+        self._bg: set[asyncio.Task[Any]] = set()
 
     async def apply_settings(self, new_settings: Settings) -> None:
         """热重载配置：按新配置重建全部组件，然后关掉旧客户端。
@@ -241,6 +243,64 @@ class Hub:
         self._rebuild_runtimes_after_reload()
         self.stats.relayouts += 1
         return True
+
+    # ------------------------------------------------------------------
+    # 订阅添加通知
+    # ------------------------------------------------------------------
+    def spawn_bg(self, coro: Coroutine[Any, Any, Any]) -> None:
+        """后台执行附加任务：不阻塞调用方，异常由任务内部自行消化。"""
+        task = asyncio.get_running_loop().create_task(coro)
+        self._bg.add(task)
+        task.add_done_callback(self._bg.discard)
+
+    async def announce_subscription(self, sub: Subscription) -> None:
+        """新订阅保存后，往 Telegram 发一条「已添加订阅」确认（尽量带海报）。
+
+        形如：风华令 (2026) S01 已添加订阅
+          * 有 tmdb_id → 直取 TMDB 条目：中文名 + 年份 + 海报
+          * 只有订阅名（feed 模式）→ 名字是用户随手起的标签，
+            只有**精确**命中 TMDB 才配海报，否则会配出不相干的图
+          * TMDB 未配置 / 没命中 → 只发文字
+        全程吞异常：订阅本身已经保存成功，通知只是锦上添花。
+        """
+        try:
+            if not self.tg.enabled:
+                log.info("Telegram 未配置，跳过「已添加订阅」通知：%s", sub.name)
+                return
+            title, year, poster = sub.name, None, None
+            if self.settings.tmdb.enabled:
+                try:
+                    raw = await self._tmdb_raw_for_announce(sub)
+                    if raw is not None:
+                        title = str(raw.get("name") or "") or sub.name
+                        year = _year_of(raw.get("first_air_date"))
+                        poster = await self.poster_resolver.download_poster(
+                            str(raw.get("poster_path") or "")
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("「已添加订阅」查 TMDB/海报失败，改发纯文字：%s", exc)
+            caption = self.notifier.render_sub_added(sub, title=title, year=year)
+            if poster:
+                sent = await self.tg.send_photo(poster, caption=caption)
+                if sent.ok:
+                    return
+                log.debug("订阅海报发送失败，改发文字：%s", sent.error)
+            await self.tg.send_message(caption)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("「已添加订阅」通知没发出去（不影响订阅本身）：%s", exc)
+
+    async def _tmdb_raw_for_announce(self, sub: Subscription) -> dict[str, Any] | None:
+        """为「已添加订阅」通知查 TMDB 条目；返回原始 tv 对象或 None。"""
+        if sub.tmdb_id:
+            return await self.tmdb.resolve(sub.name, sub.tmdb_id)
+        # 没有_tmdb_id：订阅名精确命中才采用（宁缺勿错）
+        results = await self.tmdb.search_tv(sub.name)
+        target = normalize_for_compare(sub.name)
+        for item in results or []:
+            for candidate in (item.get("name"), item.get("original_name")):
+                if candidate and normalize_for_compare(str(candidate)) == target:
+                    return item
+        return None
 
     async def stop(self, *_args: Any) -> None:
         if not self._stop.is_set():
@@ -1102,9 +1162,16 @@ async def cmd_add(
     if any(s.id == sub_id for s in subs):
         print(f"订阅已存在：{sub_id}")
         return 1
-    subs.append(Sub(id=sub_id, name=name, rss=rss, tmdb_id=tmdb_id, year=year, season=season))
+    sub = Sub(id=sub_id, name=name, rss=rss, tmdb_id=tmdb_id, year=year, season=season)
+    subs.append(sub)
     save_subscriptions(settings.subs_file, subs)
     print(f"✅ 已写入 {settings.subs_file}：{name}（id={sub_id}）")
+    # 顺带发一条「已添加订阅」确认（带海报）。任何失败都不影响订阅本身。
+    hub = Hub(settings)
+    try:
+        await hub.announce_subscription(sub)
+    finally:
+        await hub.aclose()
     return 0
 
 

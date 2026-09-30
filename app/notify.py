@@ -320,6 +320,19 @@ class Notifier:
         lines.append(f"🕒 {esc(local_now().strftime('%Y-%m-%d %H:%M'))}")
         return "\n".join(lines)
 
+    def render_sub_added(self, sub: Subscription, *, title: str = "", year: int | None = None) -> str:
+        """「已添加订阅」确认条：风华令 (2026) S01 已添加订阅。
+
+        title/year 来自 TMDB（拿得到就用中文名+年份），拿不到退回订阅名。
+        season 只在订阅明确指定了季时显示。
+        """
+        bits = [esc(title or sub.name)]
+        if year:
+            bits.append(f"({year})")
+        if sub.season:
+            bits.append(f"S{sub.season:02d}")
+        return " ".join(bits) + " 已添加订阅"
+
     def render_status(self, states: list[tuple[Subscription, SubState | None]]) -> str:
         lines = ["📋 <b>订阅总览</b>", ""]
         if not states:

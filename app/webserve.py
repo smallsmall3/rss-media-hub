@@ -563,9 +563,14 @@ class WebUI:
             raise ValueError(f"订阅 id 已存在：{sub.id}（想覆盖请传 overwrite: true）")
 
         subs = [s for s in self.hub.settings.subscriptions if s.id != sub.id]
+        is_new = sub.id not in existing
         subs.append(sub)
         save_subscriptions(self.hub.settings.subs_file, subs)
         self.hub.reload_subscriptions_file()
+        if is_new:
+            # 新订阅 → 后台发一条「已添加订阅」确认（查 TMDB/下载海报可能要
+            # 几秒，别让网页请求干等）。覆盖已有订阅（overwrite）不算新增。
+            self.hub.spawn_bg(self.hub.announce_subscription(sub))
         return {"ok": True, "subscription": self._sub_payload(sub), "message": f"已保存订阅「{sub.name}」"}
 
     async def h_subs_delete(self, headers, query, body) -> dict[str, Any]:

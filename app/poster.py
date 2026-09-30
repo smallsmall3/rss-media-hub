@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 
-from .titleparse import parse_release_title
+from .titleparse import parse_release_title, search_terms
 
 log = logging.getLogger(__name__)
 
@@ -135,7 +135,13 @@ class PosterResolver:
         self._cache[key] = value
 
     async def resolve(self, title: str) -> bytes | None:
-        """按发布标题找海报字节；找不到返回 None。"""
+        """按发布标题找海报字节；找不到返回 None。
+
+        会依次尝试多个搜索词：先主片名（拉丁/拼音），再中文别名。
+        这是因为国产动漫常用拼音当标题，而 TMDB 上只有中文条目 ——
+        `Su Dong Po Yu Hang Zhou De Gu Shi` 搜 0 条，
+        但标题尾部方括号里的中文名能搜到。
+        """
         if not self.enabled:
             return None
         parsed = parse_release_title(title)
@@ -148,9 +154,23 @@ class PosterResolver:
             self._cache_hits += 1
             return self._cache[key]
 
-        data = await self._fetch(parsed.title, parsed.year)
+        data = None
+        for term in search_terms(title):
+            data = await self._fetch(term, parsed.year)
+            if data:
+                break
         self._remember(key, data)
         return data
+
+    async def download_poster(self, poster_path: str) -> bytes | None:
+        """按 TMDB 的 poster_path（如 /abc.jpg）下载海报字节。
+
+        与 resolve() 不同：这里不做标题解析和相似度判断，
+        适合「已经拿到明确 TMDB 条目」的场景（比如「已添加订阅」通知）。
+        """
+        if not poster_path:
+            return None
+        return await self._download(poster_path)
 
     async def _fetch(self, name: str, year: int | None) -> bytes | None:
         if not self._image_base_ok():
