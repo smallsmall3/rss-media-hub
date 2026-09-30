@@ -502,22 +502,27 @@ class Hub:
     # ------------------------------------------------------------------
     # 主循环
     # ------------------------------------------------------------------
-    async def start(self) -> None:
+    async def start(self, *, probe: bool = True) -> None:
         """启动流程：预检 + 加载订阅 + 起三个后台循环。
 
         和 run() 分开是有意的：smoke 测试只需要"能不能正常启动"，
         不需要一直跑到有人按 Ctrl+C。
+
+        probe=False 时跳过所有会发网络请求的探测（连通性预检、首轮 RSS 抓取）。
+        CI 里必须这么用：api.telegram.org 在某些 runner 上会被卡住不放，
+        导致收尾阶段一直等，整个 job 拖到一分钟以上。
         """
         import time
 
         self.stats.started_at = time.time()
         log.info("rss-media-hub v%s 启动，轮询 %ds / 巡检 %ds",
                  __version__, self.settings.poll_interval, self.settings.reconcile_interval)
-        await self.preflight()
+        if probe:
+            await self.preflight()
         await self.reload_subscriptions()
 
         self._tasks = [
-            asyncio.create_task(self._poll_loop(), name="poll"),
+            asyncio.create_task(self._poll_loop(probe=probe), name="poll"),
             asyncio.create_task(self._reconcile_loop(), name="reconcile"),
             asyncio.create_task(self._watch_loop(), name="watch"),
         ]
@@ -538,8 +543,17 @@ class Hub:
             self.stats.notifications, self.stats.removals,
         )
 
-    async def _poll_loop(self) -> None:
+    async def _poll_loop(self, *, probe: bool = True) -> None:
+        """RSS 轮询循环。
+
+        probe=False 时把首次抓取推迟一个周期：CI 的冒烟测试只关心
+        "服务和循环能不能起来"，不想在假 RSS 地址上耗时间。
+        注意不能用 return —— 那样循环就没了，watch 之类也观察不到它。
+        """
         import time
+
+        if not probe:
+            await self._sleep_until_wake(2.0)
 
         while not self._stop.is_set():
             now = time.time()
@@ -842,7 +856,9 @@ async def cmd_smoke(settings: Settings) -> int:
 
     ok = True
     async with Hub(settings) as hub:
-        await hub.start()
+        # probe=False：不发任何网络请求。CI 里 api.telegram.org 可能被卡住，
+        # 会让这个 job 从 2 秒拖到一分钟以上。
+        await hub.start(probe=False)
         log.info("smoke: 启动流程完成，订阅 %d 条", len(hub.runtimes))
 
         # 用端口 0 让系统分配，避免 CI 里端口被占

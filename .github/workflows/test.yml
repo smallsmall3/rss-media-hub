@@ -14,6 +14,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # 保险：任何一步卡住，10 分钟就判失败并释放 runner，
+    # 而不是一直挂着（曾经因为跑了常驻的 `app run` 卡到超时）
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
