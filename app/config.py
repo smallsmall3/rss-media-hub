@@ -543,6 +543,7 @@ class Settings:
     scan_max_series: int = 0          # 全库扫描最多检查多少部剧，0=不限
     ui_token: str = ""                # 网页 UI 访问口令，留空=不校验（仅建议内网使用）
     ui_enabled: bool = True           # 是否提供网页 UI
+    auto_subscribe: bool = False      # feed 源匹配到 TMDB 剧集时自动转 show 订阅（并删原 feed 源）
     subscriptions: list[Subscription] = field(default_factory=list)
 
     @property
@@ -871,6 +872,7 @@ def load_settings(config_dir: Path | None = None, state_dir: Path | None = None)
         scan_max_series=_env_int("RMH_SCAN_MAX_SERIES", _as_int(run_file.get("scan_max_series")) or 0),
         ui_token=_env("RMH_UI_TOKEN") or _as_str(ui_file.get("token")),
         ui_enabled=_env_bool("RMH_UI_ENABLED", _as_bool(ui_file.get("enabled"), True)),
+        auto_subscribe=_env_bool("RMH_AUTO_SUBSCRIBE", _as_bool(run_file.get("auto_subscribe"), False)),
         subscriptions=subs,
     )
 
@@ -926,6 +928,7 @@ UI_EDITABLE: dict[str, dict[str, str]] = {
         "scan_cache_ttl": "int",
         "scan_concurrency": "int",
         "scan_max_series": "int",
+        "auto_subscribe": "bool",
     },
     "ui": {
         "token": "str",

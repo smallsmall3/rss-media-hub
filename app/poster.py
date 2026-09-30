@@ -20,6 +20,7 @@ feed 模式（订阅源全量）不一样：一条推送里可能有好几部不
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -81,6 +82,19 @@ def similarity(a: str, b: str) -> float:
     return 0.4 * jaccard + 0.6 * overlap
 
 
+@dataclass
+class PosterHit:
+    """一次成功的海报解析结果。"""
+
+    data: bytes                      # 海报字节
+    name: str = ""                   # TMDB 匹配名（zh-CN 中文名）
+    tmdb_id: int = 0                 # TMDB 剧集 id（一键订阅用）
+    year: int | None = None          # 首播年份
+
+    def __bool__(self) -> bool:
+        return bool(self.data)
+
+
 class PosterResolver:
     """按标题找海报。找不到就返回 None（调用方退化为纯文字推送）。"""
 
@@ -107,7 +121,7 @@ class PosterResolver:
         self._client = client
         self._owned = client is None
         self._cache: dict[str, bytes | None] = {}
-        self._detail_cache: dict[str, tuple[bytes, str] | None] = {}
+        self._detail_cache: dict[str, PosterHit | None] = {}
         self._searches = 0
         self._cache_hits = 0
 
@@ -135,7 +149,7 @@ class PosterResolver:
                 self._cache.pop(k, None)
         self._cache[key] = value
 
-    def _remember_detail(self, key: str, value: tuple[bytes, str] | None) -> None:
+    def _remember_detail(self, key: str, value: PosterHit | None) -> None:
         if len(self._detail_cache) >= MAX_ENTRIES:
             for k in list(self._detail_cache)[: MAX_ENTRIES // 3]:
                 self._detail_cache.pop(k, None)
@@ -150,14 +164,13 @@ class PosterResolver:
         但标题尾部方括号里的中文名能搜到。
         """
         hit = await self.resolve_detail(title)
-        return hit[0] if hit else None
+        return hit.data if hit else None
 
-    async def resolve_detail(self, title: str) -> tuple[bytes, str] | None:
-        """按发布标题找海报字节 + TMDB 匹配到的中文名；找不到返回 None。
+    async def resolve_detail(self, title: str) -> PosterHit | None:
+        """按发布标题找海报 + TMDB 中文名 + tmdb_id；找不到返回 None。
 
-        相比 resolve() 多返回一个 matched_name：TMDB 条目的 name 字段
-        （zh-CN 语言下的中文名）。推送标题优先用它，就能显示中文名
-        而不是 PT 站发布的英文名（比如 The Girl in Blue → 佳期如梦）。
+        相比 resolve() 多返回匹配名和 tmdb_id：推送标题用中文名
+        （The Girl in Blue → 佳期如梦），一键订阅按钮用 tmdb_id。
         """
         if not self.enabled:
             return None
@@ -188,8 +201,8 @@ class PosterResolver:
             return None
         return await self._download(poster_path)
 
-    async def _fetch_detail(self, name: str, year: int | None) -> tuple[bytes, str] | None:
-        """搜索 TMDB 并下载海报，返回 (海报字节, TMDB 匹配名)；找不到返回 None。"""
+    async def _fetch_detail(self, name: str, year: int | None) -> PosterHit | None:
+        """搜索 TMDB 并下载海报，返回 PosterHit；找不到返回 None。"""
         if not self._image_base_ok():
             return None
         try:
@@ -211,7 +224,12 @@ class PosterResolver:
         if data is None:
             return None
         matched = best.get("name") or best.get("original_name") or name
-        return data, str(matched)
+        return PosterHit(
+            data=data,
+            name=str(matched),
+            tmdb_id=int(best.get("id") or 0),
+            year=_year_of(best.get("first_air_date")),
+        )
 
     def _pick(self, results: list[dict[str, Any]], name: str, year: int | None) -> dict[str, Any] | None:
         """从搜索结果里挑最可信的一个。不够像就返回 None。"""

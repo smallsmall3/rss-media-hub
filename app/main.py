@@ -315,6 +315,84 @@ class Hub:
                     return item
         return None
 
+    async def subscribe_from_tmdb(
+        self,
+        tmdb_id: int,
+        *,
+        rss: str = "",
+        season: int | None = None,
+    ) -> Subscription:
+        """按 tmdb_id 建一条 show 模式订阅（一键订阅按钮的回调）。
+
+        rss 沿用来源订阅的同站地址（能继续抓这部剧的资源）；
+        剧名/年份从 TMDB 取。已存在同 tmdb_id 的订阅时直接返回它（幂等）。
+        """
+        from .config import parse_subscription, save_subscriptions, slugify
+
+        raw = await self.tmdb.resolve("", tmdb_id)
+        name = str(raw.get("name") or "").strip() or f"tmdb-{tmdb_id}"
+        year = _year_of(raw.get("first_air_date"))
+
+        # 幂等：同 tmdb_id 已存在就返回
+        for s in self.settings.subscriptions:
+            if s.tmdb_id == tmdb_id:
+                return s
+
+        sub = parse_subscription(
+            {
+                "id": slugify(name),
+                "name": name,
+                "tmdb_id": tmdb_id,
+                "year": year,
+                "season": season,
+                "rss": rss,
+                "mode": "show",
+            }
+        )
+        subs = list(self.settings.subscriptions)
+        subs.append(sub)
+        save_subscriptions(self.settings.subs_file, subs)
+        self.settings.subscriptions = subs
+        self.reload_subscriptions_file()
+        log.info("一键订阅：新增 show 订阅「%s」（tmdb_id=%s）", name, tmdb_id)
+        return sub
+
+    async def auto_subscribe_feed(self, sub: Subscription, views: list[ItemView]) -> Subscription | None:
+        """feed 源匹配到 TMDB 剧集时，自动转成 show 订阅并删掉原 feed 源。
+
+        只对「单剧追更源」有意义：一个 feed 源只出某部剧的资源。
+        匹配规则：拿第一条条目的标题去 TMDB 搜（resolve_detail），
+        命中且是剧集（有集号）才转；电影/合集/拿不准的不转。
+        """
+        from .release import classify_item
+
+        if not self.settings.auto_subscribe or not self.settings.tmdb.enabled:
+            return None
+        if not views:
+            return None
+
+        # 只看第一条：单剧源里所有条目都是同一部剧
+        first = views[0]
+        kind, _ = classify_item(first.title, has_episode=bool(first.episode_label))
+        if kind != "剧集":
+            log.debug("[%s] 自动订阅跳过：不是连续剧集（%s）", sub.name, kind)
+            return None
+
+        hit = await self.poster_resolver.resolve_detail(first.title)
+        if hit is None or hit.tmdb_id <= 0:
+            log.debug("[%s] 自动订阅跳过：没匹配到 TMDB 剧集", sub.name)
+            return None
+
+        # 转订阅：沿用原 feed 的 rss（同站，能继续抓这部剧）；追全部季
+        new_sub = await self.subscribe_from_tmdb(
+            hit.tmdb_id,
+            rss=sub.rss,
+            season=None,
+        )
+        # 删掉原 feed 源
+        await self.remove_subscription(sub, reason=f"已自动转为 show 订阅「{new_sub.name}」")
+        return new_sub
+
     async def stop(self, *_args: Any) -> None:
         if not self._stop.is_set():
             log.info("收到停止信号，正在优雅退出…")
@@ -443,6 +521,13 @@ class Hub:
             else:
                 log.warning("[%s] 新种推送失败，下次轮询重试", sub.name)
                 await self.db.add_items([_to_record(sub.id, it) for it in to_notify], notified=False)
+
+            # 自动订阅：feed 源匹配到 TMDB 剧集 → 转 show 订阅 + 删原 feed 源
+            if sub.is_feed and self.settings.auto_subscribe:
+                try:
+                    await self.auto_subscribe_feed(sub, views)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("[%s] 自动订阅失败：%s", sub.name, exc)
 
         if skipped:
             detail = "；".join(f"{it.title[:40]}…（{reason}）" for it, reason in skipped[:3])

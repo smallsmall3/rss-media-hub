@@ -139,8 +139,10 @@ class SenderBehaviourTest(unittest.IsolatedAsyncioTestCase):
             self.responses = list(responses)
             self.calls: list[dict] = []
 
-        async def post(self, url, data=None, files=None):
-            self.calls.append({"url": url, "data": dict(data or {}), "files": files})
+        async def post(self, url, data=None, files=None, json=None):
+            # 生产代码用 json= 发（兼容 reply_markup 嵌套结构）
+            payload = json if json is not None else data
+            self.calls.append({"url": url, "data": dict(payload or {}), "files": files})
             return self.responses.pop(0) if self.responses else SenderBehaviourTest.FakeResponse(
                 {"ok": True, "result": {"message_id": 1}}
             )

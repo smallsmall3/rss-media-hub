@@ -153,9 +153,9 @@ class DisabledTest(unittest.IsolatedAsyncioTestCase):
         r._download = fake_download  # type: ignore[assignment]
         hit = await r.resolve_detail("The Girl in Blue S01 1080p TX(2026)")
         self.assertIsNotNone(hit)
-        data, name = hit
-        self.assertEqual(data, b"\xff\xd8x")
-        self.assertEqual(name, "佳期如梦", "应返回 TMDB 中文名而非英文原名")
+        self.assertEqual(hit.data, b"\xff\xd8x")
+        self.assertEqual(hit.name, "佳期如梦", "应返回 TMDB 中文名而非英文原名")
+        self.assertEqual(hit.tmdb_id, 0, "FakeTmdb 没给 id，应为 0")
 
     async def test_disabled_returns_none_without_calling_tmdb(self):
         calls = []
@@ -467,9 +467,11 @@ class CaptionTemplateTest(unittest.IsolatedAsyncioTestCase):
         return n
 
     async def test_image_caption_template_used(self):
+        from app.poster import PosterHit
+
         class R:
             async def resolve_detail(self, title):
-                return b"\xff\xd8x", "无可替代"
+                return PosterHit(data=b"\xff\xd8x", name="无可替代", tmdb_id=123)
 
             async def resolve(self, title):
                 return b"\xff\xd8x"
@@ -485,9 +487,11 @@ class CaptionTemplateTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("4.61 GB", caption)
 
     async def test_no_image_caption_field_falls_back_to_builtin(self):
+        from app.poster import PosterHit
+
         class R:
             async def resolve_detail(self, title):
-                return b"\xff\xd8x", "无可替代"
+                return PosterHit(data=b"\xff\xd8x", name="无可替代", tmdb_id=123)
 
         n = self._notifier('{"text": "清单"}')
         items = await n.poster_items(None, [self._view("无可替代.S01E06.2160p", "S01E06", "4.61 GB")], resolver=R())

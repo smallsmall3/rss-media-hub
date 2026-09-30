@@ -73,6 +73,7 @@ class Message:
     image: bytes | None = None
     link: str = ""
     image_caption: str = ""
+    reply_markup: dict[str, Any] | None = None  # inline 键盘（一键订阅按钮）
 
     @property
     def has_image(self) -> bool:
@@ -610,30 +611,39 @@ class Notifier:
             return []
         out: list[tuple[bytes, str]] = []
         for view in views[:max_items]:
-            matched_name = ""
-            try:
-                # 优先用 resolve_detail 拿「海报 + TMDB 中文名」；
-                # 老 resolver 只有 resolve() 时退回纯字节。
-                resolve_detail = getattr(resolver, "resolve_detail", None)
-                if resolve_detail:
-                    hit = await resolve_detail(view.title)
-                    if hit:
-                        data, matched_name = hit
-                    else:
-                        data = None
-                else:
-                    data = await resolver.resolve(view.title)
-            except Exception as exc:  # noqa: BLE001
-                log.debug("取海报失败（%s）：%s", view.title, exc)
+            hit = await self._resolve_hit(view, resolver)
+            if hit is None:
                 continue
+            data = hit.data
             if not data:
                 continue
             # caption：feed_new 模板的 image_caption 字段优先，没配退回内置
-            caption = self._caption_from_template(view, matched_name) or self._poster_caption(
-                view, matched_name=matched_name
+            caption = self._caption_from_template(view, hit.name) or self._poster_caption(
+                view, matched_name=hit.name
             )
             out.append((data, caption))
         return out
+
+    async def _resolve_hit(self, view: ItemView, resolver: Any):
+        """解析单条条目的海报 hit（含 tmdb_id/中文名）。失败返回 None。"""
+        try:
+            # 优先用 resolve_detail 拿「海报 + TMDB 中文名 + tmdb_id」；
+            # 老 resolver 只有 resolve() 时退回纯字节。
+            resolve_detail = getattr(resolver, "resolve_detail", None)
+            if resolve_detail:
+                hit = await resolve_detail(view.title)
+                if hit is not None:
+                    return hit
+                return None
+            data = await resolver.resolve(view.title)
+            if not data:
+                return None
+            from .poster import PosterHit
+
+            return PosterHit(data=data, name="")
+        except Exception as exc:  # noqa: BLE001
+            log.debug("取海报失败（%s）：%s", view.title, exc)
+            return None
 
     def _caption_from_template(self, view: ItemView, matched_name: str) -> str | None:
         """feed_new 模板里的 image_caption 字段 → 海报图下文字。
@@ -709,14 +719,16 @@ class Notifier:
 
         photo_ok = False
         if message.image:
-            sent = await self.tg.send_photo(message.image, caption=message.caption or "")
+            sent = await self.tg.send_photo(
+                message.image, caption=message.caption or "", reply_markup=message.reply_markup
+            )
             photo_ok = sent.ok
             if not photo_ok:
                 log.debug("发海报失败，退化为纯文字：%s", sent.error)
 
         if photo_ok and not message.text.strip():
             return True
-        result = await self.tg.send_message(message.text)
+        result = await self.tg.send_message(message.text, reply_markup=message.reply_markup)
         return photo_ok or result.ok
 
     async def push(
@@ -725,12 +737,14 @@ class Notifier:
         *,
         poster: tuple[str, ReconcileResult | None] | None = None,
         poster_items: list[tuple[bytes, str]] | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> bool:
         """发一条推送（兼容旧签名，内部统一走 Message）。
 
         poster：show 模式的单张海报（按剧，从 Emby/TMDB 取）。
         poster_items：feed 模式的「每条内容自己的海报」，
                       形如 [(图片字节, caption)]。
+        reply_markup：inline 键盘（一键订阅按钮），挂在海报和文字上。
 
         feed 模式下**只发第一张图**，其余条目走文字 —— 一条推送几十条新种时，
         连发几十张图会刷屏，还会撞上 Telegram 的限流。
@@ -740,14 +754,14 @@ class Notifier:
             return False
 
         if poster_items:
-            message = Message(text=text)
+            message = Message(text=text, reply_markup=reply_markup)
             if poster_items[0][0]:
                 message.image, message.image_caption = poster_items[0]
             return await self.push_message(message)
 
         if poster:
             data = await self._poster(poster[0], poster[1])
-            message = Message(text=text, image=data)
+            message = Message(text=text, image=data, reply_markup=reply_markup)
             return await self.push_message(message)
 
-        return await self.push_message(Message(text=text))
+        return await self.push_message(Message(text=text, reply_markup=reply_markup))

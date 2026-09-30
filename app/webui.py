@@ -1102,10 +1102,11 @@ async function renderSettings(){
         </select></div>
     </div>
     <div class="actions">
+      <label style="margin:0"><input type="checkbox" id="c_auto_sub" ${chk('runtime','auto_subscribe')} style="width:auto"> feed 源匹配到 TMDB 剧集时自动转订阅</label>
       <button class="act primary" onclick="saveConfig()">保存全部设置</button>
       <span class="muted" style="font-size:12px">保存后立即热重载，无需重启容器</span>
     </div>
-    <div class="hint">配置写入 <code>${esc(d.overrides_file)}</code>，不会改动你手写的 config.yaml。环境变量优先级最高（带 env 标记的字段改了也不生效）。</div>
+    <div class="hint">配置写入 <code>${esc(d.overrides_file)}</code>，不会改动你手写的 config.yaml。环境变量优先级最高（带 env 标记的字段改了也不生效）。<br>「自动订阅」只对<b>单剧追更源</b>有意义：feed 源抓到某部剧 → 匹配 TMDB → 自动转成 show 订阅（追剧）并删掉原 feed 源。电影/合集/拿不准的不转。</div>
   </div>`;
   loadMappings();
   loadTemplates();
@@ -1149,6 +1150,7 @@ function collectChanges(){
   put('runtime','scan_concurrency', Number(S('#c_scan_conc')) || 5);
   put('runtime','scan_max_series', Number(S('#c_scan_max')) || 0);
   put('runtime','log_level', S('#c_log'));
+  put('runtime','auto_subscribe', C('#c_auto_sub'));
   return out;
 }
 

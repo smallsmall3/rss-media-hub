@@ -194,10 +194,12 @@ class TelegramSender:
         for base in bases:
             for attempt in range(1, 4):
                 try:
+                    # reply_markup 等嵌套结构必须走 JSON，不能塞进表单 data。
+                    # 有 files 时（sendPhoto）用 multipart；无 files 用 JSON。
                     if files:
                         resp = await client.post(self._url(method, base), data=data, files=files)
                     else:
-                        resp = await client.post(self._url(method, base), data=data)
+                        resp = await client.post(self._url(method, base), json=data)
                     if resp.status_code == 429:
                         retry_after = 3
                         try:
@@ -229,22 +231,44 @@ class TelegramSender:
         return TgResult(False, error=last_error or "未知错误")
 
     # ------------------------------------------------------------------
-    async def send_message(self, text: str, *, parse_mode: str = "HTML") -> TgResult:
+    async def send_message(
+        self,
+        text: str,
+        *,
+        parse_mode: str = "HTML",
+        reply_markup: dict[str, Any] | None = None,
+    ) -> TgResult:
         last = TgResult(False, error="空消息")
-        for chunk in split_message(text):
-            last = await self._call("sendMessage", {"chat_id": self.chat_id, "text": chunk, "parse_mode": parse_mode,
-                                                    "disable_web_page_preview": "true"})
+        for idx, chunk in enumerate(split_message(text)):
+            # 按钮只挂在最后一块（一条消息一个键盘，中间块不需要）
+            markup = reply_markup if (reply_markup and idx == len(split_message(text)) - 1) else None
+            last = await self._call(
+                "sendMessage",
+                {"chat_id": self.chat_id, "text": chunk, "parse_mode": parse_mode,
+                 "disable_web_page_preview": "true", "reply_markup": markup},
+            )
             if not last.ok:
                 log.error("Telegram 发送失败：%s", last.error)
                 return last
         return last
 
-    async def send_photo(self, photo: bytes, caption: str = "") -> TgResult:
+    async def send_photo(
+        self,
+        photo: bytes,
+        caption: str = "",
+        *,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> TgResult:
         if not photo:
             return TgResult(False, error="没有图片数据")
+        import json as _json
+
+        # multipart 表单里嵌套结构要 JSON 序列化成字符串，Telegram 才能解析
+        markup = _json.dumps(reply_markup, ensure_ascii=False) if reply_markup else None
         return await self._call(
             "sendPhoto",
-            {"chat_id": self.chat_id, "caption": caption[:1024], "parse_mode": "HTML"},
+            {"chat_id": self.chat_id, "caption": caption[:1024], "parse_mode": "HTML",
+             "reply_markup": markup},
             files={"photo": ("poster.jpg", photo, "image/jpeg")},
         )
 
