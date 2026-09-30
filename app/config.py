@@ -418,6 +418,22 @@ class LibrarySettings:
 
 
 @dataclass
+class TransmissionSettings:
+    """Transmission 连接配置：站点标签打标用（只贴标签，不负责下载）。"""
+
+    url: str = ""        # 例如 http://192.168.31.221:9092/transmission/rpc
+    user: str = ""
+    password: str = ""
+    enabled: bool = False       # 是否开启定时打标
+    interval: int = 3600        # 打标间隔（秒），默认 1 小时
+    auto_pt: bool = True        # 命中站点标签时是否自动补一个 "PT" 标签
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.url)
+
+
+@dataclass
 class Subscription:
     """一条订阅。
 
@@ -515,6 +531,7 @@ class Settings:
     telegram: TelegramSettings
     tmdb: TmdbSettings
     library: LibrarySettings
+    transmission: TransmissionSettings
     poll_interval: int = 900
     reconcile_interval: int = 1800
     seed_silent: bool = False
@@ -540,6 +557,11 @@ class Settings:
     @property
     def subs_file(self) -> Path:
         return self.config_dir / "subscriptions.yaml"
+
+    @property
+    def mappings_file(self) -> Path:
+        """站点标签映射表（域名=标签），与打标模块共用。"""
+        return self.config_dir / "mappings.txt"
 
     @property
     def db_file(self) -> Path:
@@ -771,6 +793,7 @@ def load_settings(config_dir: Path | None = None, state_dir: Path | None = None)
     tg_file = file_cfg.get("telegram") or {}
     tmdb_file = file_cfg.get("tmdb") or {}
     lib_file = file_cfg.get("library") or file_cfg.get("emby") or {}
+    tr_file = file_cfg.get("transmission") or {}
     run_file = file_cfg.get("runtime") or {}
     ui_file = file_cfg.get("ui") or {}
 
@@ -812,6 +835,15 @@ def load_settings(config_dir: Path | None = None, state_dir: Path | None = None)
         proxy=_env("RMH_EMBY_PROXY") or _as_str(lib_file.get("proxy")),
     )
 
+    transmission = TransmissionSettings(
+        url=_env("RMH_TR_URL") or _as_str(tr_file.get("url")).rstrip("/"),
+        user=_env("RMH_TR_USER") or _as_str(tr_file.get("user")),
+        password=_env("RMH_TR_PASS") or _as_str(tr_file.get("password")),
+        enabled=_env_bool("RMH_TR_ENABLED", _as_bool(tr_file.get("enabled"), False)),
+        interval=_env_int("RMH_TR_INTERVAL", _as_int(tr_file.get("interval")) or 3600),
+        auto_pt=_env_bool("RMH_TR_AUTO_PT", _as_bool(tr_file.get("auto_pt"), True)),
+    )
+
     subs = load_subscriptions(cfg_dir / "subscriptions.yaml")
 
     return Settings(
@@ -820,6 +852,7 @@ def load_settings(config_dir: Path | None = None, state_dir: Path | None = None)
         telegram=telegram,
         tmdb=tmdb,
         library=library,
+        transmission=transmission,
         poll_interval=_env_int("RMH_POLL_INTERVAL", _as_int(run_file.get("poll_interval")) or 900),
         reconcile_interval=_env_int("RMH_RECONCILE_INTERVAL", _as_int(run_file.get("reconcile_interval")) or 1800),
         seed_silent=_env_bool("RMH_SEED_SILENT", _as_bool(run_file.get("seed_silent"), False)),
@@ -871,6 +904,14 @@ UI_EDITABLE: dict[str, dict[str, str]] = {
         "verify_tls": "bool",
         "cache_ttl": "int",
         "proxy": "str",
+    },
+    "transmission": {
+        "url": "str",
+        "user": "str",
+        "password": "str",
+        "enabled": "bool",
+        "interval": "int",
+        "auto_pt": "bool",
     },
     "runtime": {
         "poll_interval": "int",

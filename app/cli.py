@@ -15,6 +15,7 @@ from .main import (
     cmd_check,
     cmd_feeds,
     cmd_gaps,
+    cmd_label,
     cmd_list,
     cmd_preflight,
     cmd_rm,
@@ -57,6 +58,16 @@ library:
   include_specials: false # 是否把特别篇(Season 0)计入
   cache_ttl: 300          # 媒体库查询结果缓存秒数，避免频繁打 Emby
   verify_tls: false       # 自签证书环境保持 false
+
+transmission:
+  # 站点标签打标：扫描 Transmission 全库种子，按 tracker 域名贴站点标签。
+  # 只添加标签、绝不覆盖已有标签；站点映射表在 config/mappings.txt。
+  url: ""                 # 例如 http://192.168.31.221:9092/transmission/rpc
+  user: ""
+  password: ""
+  enabled: false          # 是否开启定时打标
+  interval: 3600          # 打标间隔（秒），默认 1 小时
+  auto_pt: true           # 命中站点标签时自动补一个 "PT" 标签
 
 runtime:
   # RSS 刷新间隔（秒）：想每 2-5 分钟看一次新数据就填 120~300
@@ -217,6 +228,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_rm.add_argument("target", help="订阅 id 或名称")
     p_rm.add_argument("--keep-items", action="store_true", help="保留历史条目记录")
 
+    p_label = sub.add_parser("label", help="Transmission 站点标签打标：扫描全库种子贴站点标签")
+    p_label.add_argument("--apply", action="store_true", help="实际写入标签（默认只预演）")
+    p_label.add_argument("--no-pt", action="store_true", help="不要自动补 PT 标签")
+    p_label.add_argument("--json", dest="json_only", action="store_true", help="只输出 JSON")
+
     return parser
 
 
@@ -292,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if command == "rm":
         return asyncio.run(cmd_rm(settings, args.target, keep_items=args.keep_items))
+    if command == "label":
+        return asyncio.run(cmd_label(settings, apply=args.apply, no_pt=args.no_pt, json_only=args.json_only))
 
     parser.print_help()
     return 1

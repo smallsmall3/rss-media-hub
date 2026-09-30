@@ -35,6 +35,7 @@ from .reconcile import ReconcileResult, Reconciler
 from .rss import FeedItem, fetch_feed
 from .telegram import TelegramSender
 from .tmdb import TmdbClient, _year_of
+from .trlabeler import TransmissionClient, LabelMappings, scan_and_label, load_mappings, TrError
 
 log = logging.getLogger("rss-media-hub")
 
@@ -133,6 +134,15 @@ class Hub:
         )
         self.notifier = Notifier(settings, self.tg, self.library)
         self.gapfinder = GapFinder(settings, self.http)
+        # Transmission 站点标签打标（只贴标签，不下载）
+        self.tr = TransmissionClient(
+            settings.transmission.url,
+            user=settings.transmission.user,
+            password=settings.transmission.password,
+        )
+        self.tr_mappings = LabelMappings(load_mappings(settings.mappings_file))
+        # 打标状态（最近一次结果，供网页 UI 展示）
+        self.last_label_result: dict[str, Any] = {}
         # feed 模式的海报：按片名去 TMDB 搜。
         # 需要 TMDB 可用，且用户没关掉这个开关。
         self.poster_resolver = PosterResolver(
@@ -208,6 +218,7 @@ class Hub:
         await self.library.aclose()
         await self.tmdb.aclose()
         await self.poster_resolver.aclose()
+        await self.tr.aclose()
         await self.http.aclose()
         self.db.close()
 
@@ -602,6 +613,9 @@ class Hub:
             asyncio.create_task(self._reconcile_loop(), name="reconcile"),
             asyncio.create_task(self._watch_loop(), name="watch"),
         ]
+        # 站点标签打标：只有配置了 Transmission 且开启了定时打标才启动循环
+        if self.settings.transmission.enabled and self.settings.transmission.configured:
+            self._tasks.append(asyncio.create_task(self._label_loop(), name="labeler"))
 
     async def run(self) -> None:
         """常驻运行：启动后一直等到 stop() 被调用。"""
@@ -705,6 +719,57 @@ class Hub:
             except Exception as exc:  # noqa: BLE001
                 log.warning("热重载订阅失败：%s", exc)
             await self._sleep_until_wake(30.0)
+
+    # ------------------------------------------------------------------
+    # 站点标签打标
+    # ------------------------------------------------------------------
+    async def label_once(self, *, apply: bool = False) -> dict[str, Any]:
+        """扫描一次 Transmission 全库并（可选）写标签。返回结果摘要。
+
+        只添加、绝不覆盖；一个都没命中映射的种子保持原样。
+        """
+        import time
+
+        if not self.settings.transmission.configured:
+            return {"ok": False, "error": "未配置 Transmission 地址"}
+        try:
+            plan = await scan_and_label(
+                self.tr,
+                self.tr_mappings,
+                apply=apply,
+                auto_pt=self.settings.transmission.auto_pt,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("打标失败：%s", exc)
+            return {"ok": False, "error": str(exc), "applied": apply}
+
+        result: dict[str, Any] = {
+            "ok": True,
+            "applied": apply,
+            "total": plan.total,
+            "changes": plan.changes,
+            "skipped_unmapped": plan.skipped_unmapped,
+            "unmapped": sorted(plan.unmapped)[:50],
+            "at": time.time(),
+        }
+        self.last_label_result = result
+        if apply:
+            log.info("打标完成：%d 个种子需要更新，已写入", plan.changes)
+        else:
+            log.info("打标预演：%d 个种子需要更新（未写入）", plan.changes)
+        return result
+
+    async def _label_loop(self) -> None:
+        """定时打标循环：按 transmission.interval 周期执行。"""
+        import time
+
+        while not self._stop.is_set():
+            try:
+                await self.label_once(apply=True)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("定时打标异常：%s", exc)
+            interval = max(300, int(self.settings.transmission.interval))
+            await self._sleep_until_wake(interval)
 
     async def _sleep_until_wake(self, seconds: float) -> None:
         self._wake.clear()
@@ -1172,6 +1237,45 @@ async def cmd_add(
         await hub.announce_subscription(sub)
     finally:
         await hub.aclose()
+    return 0
+
+
+async def cmd_label(
+    settings: Settings,
+    *,
+    apply: bool = False,
+    no_pt: bool = False,
+    json_only: bool = False,
+) -> int:
+    """Transmission 站点标签打标（预演默认不写入）。"""
+    import json as _json
+
+    hub = Hub(settings)
+    try:
+        if no_pt:
+            hub.settings.transmission.auto_pt = False
+        result = await hub.label_once(apply=apply)
+    finally:
+        await hub.aclose()
+
+    if json_only:
+        print(_json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+
+    if not result.get("ok"):
+        print(f"❌ 打标失败：{result.get('error')}")
+        return 1
+    verb = "已写入" if apply else "待更新（预演）"
+    print(f"种子总数: {result['total']}")
+    print(f"{verb}: {result['changes']} 个   (全部 tracker 未映射而跳过: {result['skipped_unmapped']} 个)")
+    if result.get("unmapped"):
+        print("未在映射表中的域名：")
+        for host in result["unmapped"]:
+            print(f"    {host}")
+    if apply:
+        print("✅ 标签已更新。")
+    else:
+        print("--- 预演模式，未写入任何内容；确认无误后加 --apply ---")
     return 0
 
 

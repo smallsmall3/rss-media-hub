@@ -970,6 +970,33 @@ async function renderSettings(){
   </div>
 
   <div class="card" style="margin-top:14px">
+    <h2>Transmission 站点标签</h2>
+    <div class="f2">
+      <div><label>RPC 地址 ${envTag('transmission','url')}</label><input id="c_tr_url" value="${esc(val('transmission','url'))}" placeholder="http://192.168.31.221:9092/transmission/rpc">
+        <div class="hint">只贴标签、不负责下载</div></div>
+      <div><label>账号 ${envTag('transmission','user')}</label><input id="c_tr_user" value="${esc(val('transmission','user'))}"></div>
+      <div><label>密码 ${envTag('transmission','password')}</label>${secretInput('c_tr_pass','transmission','password','')}</div>
+      <div><label>打标间隔（秒）${envTag('transmission','interval')}</label><input id="c_tr_interval" type="number" value="${esc(val('transmission','interval'))}"></div>
+    </div>
+    <div class="actions">
+      <label style="margin:0"><input type="checkbox" id="c_tr_enabled" ${chk('transmission','enabled')} style="width:auto"> 开启定时打标</label>
+      <label style="margin:0"><input type="checkbox" id="c_tr_pt" ${chk('transmission','auto_pt')} style="width:auto"> 自动补 PT 标签</label>
+      <button class="act" onclick="runLabels(false)">预演打标</button>
+      <button class="act primary" onclick="runLabels(true)">立即打标</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2>站点标签映射 <span class="muted" style="font-weight:normal">mappings.txt</span></h2>
+    <textarea id="c_mappings" rows="10" style="width:100%;font-family:var(--mono,monospace);font-size:12px" placeholder="域名=标签，一行一条&#10;ubits.club=站点/ubits&#10;m-team.cc=站点/m-team"></textarea>
+    <div class="actions">
+      <button class="act" onclick="loadMappings()">读取</button>
+      <button class="act primary" onclick="saveMappings()">保存映射</button>
+    </div>
+    <div class="hint">规则：tracker 域名与此相等、或为其子域时命中；以 # 开头为注释；只添加标签、绝不覆盖已有标签。</div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
     <h2>运行参数</h2>
     <div class="f2">
       <div><label>RSS 轮询间隔（秒）</label><input id="c_poll" type="number" value="${esc(val('runtime','poll_interval'))}"></div>
@@ -987,6 +1014,7 @@ async function renderSettings(){
     </div>
     <div class="hint">配置写入 <code>${esc(d.overrides_file)}</code>，不会改动你手写的 config.yaml。环境变量优先级最高（带 env 标记的字段改了也不生效）。</div>
   </div>`;
+  loadMappings();
 }
 
 function collectChanges(){
@@ -1015,6 +1043,13 @@ function collectChanges(){
   put('library','include_specials', C('#c_emby_specials'));
   put('library','verify_tls', C('#c_emby_tls'));
 
+  put('transmission','url', S('#c_tr_url'));
+  put('transmission','user', S('#c_tr_user'));
+  if (S('#c_tr_pass')) put('transmission','password', S('#c_tr_pass'));
+  put('transmission','interval', Number(S('#c_tr_interval')) || 3600);
+  put('transmission','enabled', C('#c_tr_enabled'));
+  put('transmission','auto_pt', C('#c_tr_pt'));
+
   put('runtime','poll_interval', Number(S('#c_poll')) || 900);
   put('runtime','reconcile_interval', Number(S('#c_reconcile')) || 1800);
   put('runtime','scan_concurrency', Number(S('#c_scan_conc')) || 5);
@@ -1038,6 +1073,33 @@ async function testTg(){
     const r = await api.post('/api/telegram/test', {});
     toast(`已发送（机器人 @${r.bot}），请查看 Telegram`, 'ok');
   } catch(e){ toast('发送失败：' + e.message, 'err'); }
+}
+
+async function runLabels(apply){
+  toast(apply ? '正在打标…' : '正在预演…');
+  try {
+    const r = await api.post('/api/labels/run', {apply: apply});
+    const x = r.result || {};
+    const verb = apply ? '已写入' : '待更新';
+    let msg = `种子 ${x.total} 个，${verb} ${x.changes} 个（未映射跳过 ${x.skipped_unmapped} 个）`;
+    if (x.unmapped && x.unmapped.length) msg += '；未映射域名：' + x.unmapped.join(', ');
+    toast(msg, apply ? 'ok' : '');
+  } catch(e){ toast('打标失败：' + e.message, 'err'); }
+}
+
+async function loadMappings(){
+  try {
+    const r = await api.get('/api/labels/mappings');
+    $('#c_mappings').value = r.text || '';
+  } catch(e){ toast('读取失败：' + e.message, 'err'); }
+}
+
+async function saveMappings(){
+  try {
+    const text = $('#c_mappings').value;
+    const r = await api.post('/api/labels/mappings', {text: text});
+    toast(r.message || '已保存', 'ok');
+  } catch(e){ toast('保存失败：' + e.message, 'err'); }
 }
 
 /* ---------------- 路由 ---------------- */

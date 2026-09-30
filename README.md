@@ -258,6 +258,7 @@ RSS 标题 → 集号，按优先级：
 | `list` | 列出所有订阅、最近一次巡检结果、登记条目数 |
 | `add "剧名" --rss <地址> --tmdb-id <id> [--year] [--season]` | 新增订阅并写回 YAML |
 | `rm <订阅id或名称> [--keep-items]` | 删除订阅并清理状态 |
+| `label [--apply] [--no-pt] [--json]` | **Transmission 站点标签打标**：扫描全库种子贴站点标签（默认预演，`--apply` 才写入） |
 | `test-notify` | 发一条 Telegram 测试消息 |
 | `web` | 只跑网页 UI（不启动轮询/巡检循环），用于调试界面 |
 
@@ -467,6 +468,44 @@ RSS：1 个源成功 / 0 个失败，共 3 条条目，耗时 6.2s
 | `全12集`（合集） | 任意 | ❌ | 解析不出具体集号 |
 
 每条缺口可能有多个候选资源，会自动挑**带直链（PT 站 enclosure 带 passkey，可直接下）且体积最大**的那个作为推荐。
+
+---
+
+### 5.7 Transmission 站点标签打标（`label`）
+
+把「给 Transmission 种子贴站点标签」的能力内置进来了（源自独立的 `tr_labeler.py`）。
+扫描 Transmission 全库种子，按 tracker 域名匹配 `config/mappings.txt`，给命中的种子追加站点标签。
+
+```bash
+docker exec rss-media-hub python -m app label           # 预演，只列出要改的
+docker exec rss-media-hub python -m app label --apply   # 实际写入标签
+docker exec rss-media-hub python -m app label --no-pt   # 不自动补 PT 标签
+docker exec rss-media-hub python -m app label --json    # JSON 输出（脚本用）
+```
+
+配置项（`config.yaml` 的 `transmission` 段，或网页 UI「设置」页）：
+
+| 字段 | 说明 | 默认 |
+|---|---|---|
+| `url` | Transmission RPC 地址，如 `http://192.168.31.221:9092/transmission/rpc` | 空（不启用） |
+| `user` / `password` | 登录账号密码 | 空 |
+| `enabled` | 是否开启定时打标 | `false` |
+| `interval` | 打标间隔（秒） | `3600`（1 小时） |
+| `auto_pt` | 命中站点标签时自动补 `PT` 标签 | `true` |
+
+`config/mappings.txt` 的规则（一行一条 `域名=标签`，UTF-8）：
+
+```
+ubits.club=站点/ubits
+m-team.cc=站点/m-team
+```
+
+- tracker 域名与此相等、或为其子域时命中（写 `ubits.club` 能命中 `t.ubits.club`）
+- 以 `#` 开头的行是注释
+- **只添加标签，绝不覆盖/删除你已有的标签**（Transmission 的 labels 是覆盖语义，这里做了并集处理）
+- 一个站点都没命中的种子保持原样，不猜测、不硬贴
+
+> 网页 UI「设置」页可以直接编辑 mappings.txt，也能点「预演打标 / 立即打标」手动触发。
 
 ---
 

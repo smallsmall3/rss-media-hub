@@ -23,6 +23,7 @@ from . import __version__
 from .version import BuildInfo
 from .config import UI_EDITABLE, apply_overrides, load_settings, save_subscriptions, Subscription
 from .libraryscan import ScanResult
+from .trlabeler import LabelMappings
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +158,7 @@ SECRET_FIELDS = {
     "telegram.bot_token",
     "tmdb.api_key",
     "library.api_key",
+    "transmission.password",
     "ui.token",
 }
 
@@ -218,6 +220,9 @@ class WebUI:
             ("POST", "/api/preflight", self.h_preflight),
             ("POST", "/api/telegram/test", self.h_tg_test),
             ("POST", "/api/check", self.h_check),
+            ("POST", "/api/labels/run", self.h_labels_run),
+            ("GET", "/api/labels/mappings", self.h_labels_mappings_get),
+            ("POST", "/api/labels/mappings", self.h_labels_mappings_post),
             ("GET", "/", self.h_index),
             ("GET", "/index.html", self.h_index),
         ]
@@ -487,6 +492,14 @@ class WebUI:
         }
         tg_raw = asdict(settings.telegram)
         tmdb_raw = asdict(settings.tmdb)
+        tr_raw = {
+            "url": settings.transmission.url,
+            "user": settings.transmission.user,
+            "password": settings.transmission.password,
+            "enabled": settings.transmission.enabled,
+            "interval": settings.transmission.interval,
+            "auto_pt": settings.transmission.auto_pt,
+        }
 
         return {
             "ok": True,
@@ -500,6 +513,7 @@ class WebUI:
                 "telegram": group("telegram", tg_raw),
                 "tmdb": group("tmdb", tmdb_raw),
                 "library": group("library", library_raw),
+                "transmission": group("transmission", tr_raw),
                 "runtime": group("runtime", runtime_raw),
                 "ui": {
                     "enabled": settings.ui_enabled,
@@ -533,6 +547,7 @@ class WebUI:
             "tmdb_ready": self.hub.settings.tmdb.enabled,
             "library_ready": self.hub.settings.library.enabled,
             "library_url": self.hub.settings.library.url,
+            "transmission_ready": self.hub.settings.transmission.configured,
             "proxy_tg": self.hub.settings.telegram.proxy,
             "proxy_tmdb": self.hub.settings.tmdb.proxy,
         }
@@ -851,6 +866,42 @@ class WebUI:
                 }
             )
         return {"ok": True, "results": rows}
+
+    async def h_labels_run(self, headers, query, body) -> dict[str, Any]:
+        """立即执行一次 Transmission 站点标签打标（可选 --apply）。"""
+        payload: dict[str, Any] = {}
+        try:
+            payload = parse_json_body(body)
+        except ValueError:
+            payload = {}
+        apply = bool(payload.get("apply"))
+        result = await self.hub.label_once(apply=apply)
+        if not result.get("ok"):
+            raise ValueError(result.get("error") or "打标失败")
+        return {"ok": True, "result": result}
+
+    async def h_labels_mappings_get(self, headers, query, body) -> dict[str, Any]:
+        """读取站点标签映射表（mappings.txt）内容。"""
+        path = self.hub.settings.mappings_file
+        text = ""
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+        return {"ok": True, "path": str(path), "text": text}
+
+    async def h_labels_mappings_post(self, headers, query, body) -> dict[str, Any]:
+        """保存站点标签映射表内容，并热重载。"""
+        payload = parse_json_body(body)
+        text = payload.get("text")
+        if text is None:
+            raise ValueError("缺少 text 字段（mappings.txt 的完整内容）")
+        path = self.hub.settings.mappings_file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        # 热重载映射表（下一次打标就用新映射）
+        from .trlabeler import load_mappings as _load_mappings
+
+        self.hub.tr_mappings = LabelMappings(_load_mappings(path))
+        return {"ok": True, "path": str(path), "message": "映射表已保存"}
 
 
 def _scan_summary(result: ScanResult | None) -> dict[str, Any] | None:
