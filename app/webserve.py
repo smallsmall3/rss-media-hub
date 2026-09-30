@@ -160,6 +160,28 @@ SECRET_FIELDS = {
 }
 
 
+def mask_secret_groups(config: dict[str, Any]) -> dict[str, Any]:
+    """把配置里的密钥字段打码。
+
+    GET /api/config 与 POST /api/config 都必须过一遍：
+    POST 曾经把 apply_overrides 返回的**明文**配置直接回给浏览器
+    （等于把你刚填的 token 又送回来一次，抓包/日志里就泄露了）。
+    """
+    out: dict[str, Any] = {}
+    for group, fields in (config or {}).items():
+        if not isinstance(fields, dict):
+            out[group] = fields
+            continue
+        bucket: dict[str, Any] = {}
+        for key, value in fields.items():
+            if f"{group}.{key}" in SECRET_FIELDS:
+                bucket[key] = {"set": bool(value), "masked": mask(value)}
+            else:
+                bucket[key] = value
+        out[group] = bucket
+    return out
+
+
 # --------------------------------------------------------------------------
 # WebUI
 # --------------------------------------------------------------------------
@@ -470,7 +492,8 @@ class WebUI:
             "secret_fields": sorted(SECRET_FIELDS),
             "env_overridden": env_overridden(),
             "overrides_file": str(settings.overrides_file),
-            "overrides": overrides,
+            # 必须打码：这里是 settings.yaml 的原始内容，含明文密钥
+            "overrides": mask_secret_groups(overrides),
             "values": {
                 "telegram": group("telegram", tg_raw),
                 "tmdb": group("tmdb", tmdb_raw),
@@ -513,7 +536,8 @@ class WebUI:
         }
         return {
             "ok": True,
-            "saved": result["settings"],
+            # 必须打码：这里曾经把明文密钥回给浏览器
+            "saved": mask_secret_groups(result["settings"]),
             "ignored": result["ignored"],
             "applied": applied,
             "restart_recommended": False,

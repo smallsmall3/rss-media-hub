@@ -1,0 +1,79 @@
+# ============================================================================
+#  rss-media-hub — 最小启动版（推荐新用户用这个）
+#
+#  设计思路：先把容器跑起来，密钥全部在网页 UI 里填。
+#  好处：
+#    * 不用先折腾 token/key 才能看到界面
+#    * 填错了在界面上改，保存即生效（热重载，不用重启容器）
+#    * 分享给别人时不用泄露自己的密钥
+#
+#  三步走：
+#    1. 粘贴本文件到绿联云 → Docker → 项目 → 新建 → 部署
+#    2. 浏览器打开 http://<NAS 的 IP>:18080/
+#    3. 进「设置」页面填 Telegram / TMDB / Emby，保存
+#
+#  升级：
+#    docker compose pull && docker compose up -d
+# ============================================================================
+
+services:
+  rss-media-hub:
+    # 镜像由 GitHub Actions 自动构建（amd64 + arm64 双架构）
+    image: ghcr.io/smallsmall3/rss-media-hub:latest
+
+    container_name: rss-media-hub
+    restart: unless-stopped
+
+    environment:
+      # 时区：影响推送里显示的时间
+      TZ: Asia/Shanghai
+
+      # ---------------------------------------------------------------
+      #  以下是全部配置项，**故意留空/注释掉**，请到网页 UI 里填。
+      #
+      #  为什么可以留空：程序在密钥缺失时会正常启动，
+      #  只是对应功能不可用（界面上会显示提示）。
+      #
+      #  想用环境变量也行（环境变量优先级高于界面保存的值）。
+      # ---------------------------------------------------------------
+
+      # ---- Telegram（推送到手机）----
+      # RMH_TG_BOT_TOKEN: ""
+      # RMH_TG_CHAT_ID: ""
+      # RMH_TG_PROXY: "http://192.168.31.142:10809"   # 国内直连不通就填代理
+
+      # ---- TMDB（算剧集总集数，查漏要用）----
+      # RMH_TMDB_API_KEY: ""
+      # RMH_TMDB_PROXY: "http://192.168.31.142:10809"
+
+      # ---- Emby / Jellyfin（算入库进度，按剧追踪要用）----
+      # RMH_EMBY_URL: "http://192.168.31.221:8096"    # 必须是 NAS 能访问到的地址，不能用 localhost
+      # RMH_EMBY_API_KEY: ""
+
+      # ---- 运行参数（想改也可以进界面改）----
+      RMH_POLL_INTERVAL: "180"          # RSS 刷新间隔（秒）
+      RMH_HEALTH_PORT: "8080"
+      RMH_LOG_LEVEL: "INFO"
+
+      # ---- 网页 UI ----
+      # 留空 = 不设口令，同局域网任何人都能打开并改你的配置。
+      # 第一次进去后**建议在「设置」页面里设置访问口令**。
+      RMH_UI_ENABLED: "true"
+      # RMH_UI_TOKEN: ""
+
+      # 容器内程序以此 uid/gid 运行；报 Permission denied 就改成存储目录属主编号
+      RMH_UID: "1000"
+      RMH_GID: "1000"
+
+    volumes:
+      - /volume1/docker/rss-media-hub/config:/config
+      - /volume1/docker/rss-media-hub/state:/state
+
+    ports:
+      - "18080:8080"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

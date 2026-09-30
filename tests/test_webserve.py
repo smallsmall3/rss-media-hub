@@ -360,6 +360,64 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("tmdb.api_key", data["env_overridden"])
             self.assertEqual(data["env_overridden"]["tmdb.api_key"], "RMH_TMDB_API_KEY")
 
+    async def test_config_post_never_echoes_plaintext_secrets(self):
+        """保存密钥后，响应里绝不能回明文。
+
+        这是真实踩过的坑：apply_overrides 返回的是**明文**配置，
+        POST 处理器把它当 `saved` 字段原样回给浏览器 —— 等于把你刚填的
+        token 又送回来一次，抓包、代理日志、浏览器历史里都会留下。
+        GET 一直有 mask，POST 漏了，所以两个都要断言。
+        """
+        with temp_dir() as root:
+            # 先清掉环境变量，免得被覆盖后测不到
+            os.environ.pop("RMH_TG_BOT_TOKEN", None)
+            os.environ.pop("RMH_TMDB_API_KEY", None)
+            os.environ.pop("RMH_EMBY_API_KEY", None)
+            os.environ.pop("RMH_UI_TOKEN", None)
+            hub = await self._start(root)
+
+            secrets = {
+                "telegram": {"bot_token": "111:PLAINTEXT_TG_TOKEN", "chat_id": "-100888"},
+                "tmdb": {"api_key": "PLAINTEXT_TMDB_KEY"},
+                "library": {"api_key": "PLAINTEXT_EMBY_KEY"},
+                "ui": {"token": "PLAINTEXT_UI_TOKEN"},
+            }
+            res = await request(self._port, "POST", "/api/config", {"changes": secrets})
+            self.assertEqual(res.status, 200, res.text)
+
+            # 1) 功能必须仍然正常：密钥真的保存并生效了
+            self.assertEqual(hub.settings.telegram.bot_token, "111:PLAINTEXT_TG_TOKEN")
+            self.assertEqual(hub.settings.tmdb.api_key, "PLAINTEXT_TMDB_KEY")
+            self.assertEqual(hub.settings.library.api_key, "PLAINTEXT_EMBY_KEY")
+            self.assertEqual(hub.settings.ui_token, "PLAINTEXT_UI_TOKEN")
+
+            # 2) 响应里一个字都不能出现
+            for name in ("PLAINTEXT_TG_TOKEN", "PLAINTEXT_TMDB_KEY",
+                         "PLAINTEXT_EMBY_KEY", "PLAINTEXT_UI_TOKEN"):
+                self.assertNotIn(name, res.text, f"POST 响应泄露了 {name}")
+
+            # 3) 但要能看出"已设置"和打码预览
+            saved = res.json["saved"]
+            self.assertTrue(saved["telegram"]["bot_token"]["set"])
+            self.assertIn("****", saved["telegram"]["bot_token"]["masked"])
+            self.assertNotEqual(saved["telegram"]["bot_token"]["masked"], "111:PLAINTEXT_TG_TOKEN")
+            # 非密钥字段该明文就明文，方便确认填对了
+            self.assertEqual(saved["telegram"]["chat_id"], "-100888")
+
+            # 4) 紧接着 GET 一次也不能泄露（overrides 字段是文件原始内容）
+            res2 = await request(self._port, "GET", "/api/config")
+            for name in ("PLAINTEXT_TG_TOKEN", "PLAINTEXT_TMDB_KEY",
+                         "PLAINTEXT_EMBY_KEY", "PLAINTEXT_UI_TOKEN"):
+                self.assertNotIn(name, res2.text, f"GET 响应泄露了 {name}")
+
+    async def test_config_post_rejects_wrong_payload_shape(self):
+        """漏了 changes 这一层要明确报错，而不是静默什么都不做。"""
+        with temp_dir() as root:
+            await self._start(root)
+            res = await request(self._port, "POST", "/api/config", {"telegram": {"chat_id": "-1"}})
+            self.assertEqual(res.status, 400)
+            self.assertIn("changes", res.json["error"])
+
     async def test_config_post_saves_and_hot_reloads(self):
         with temp_dir() as root:
             hub = await self._start(root)
