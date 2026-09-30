@@ -131,6 +131,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .bar>i.done{background:var(--ok)}
   .bar-wrap{display:flex;align-items:center;gap:9px}
 
+  /* ---------- 追更卡片（MP 风格） ---------- */
+  .sub-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+  .sub-card{display:flex;gap:12px;padding:10px;border:1px solid var(--line-soft);
+    border-radius:var(--radius-sm);background:var(--panel-2);transition:border-color .15s}
+  .sub-card:hover{border-color:var(--accent)}
+  .sub-card.done{opacity:.75}
+  .sub-poster{width:74px;min-height:104px;border-radius:8px;overflow:hidden;flex-shrink:0;
+    background:linear-gradient(135deg,var(--panel),var(--panel-2));border:1px solid var(--line-soft)}
+  .sub-poster img{width:100%;height:100%;object-fit:cover;display:block}
+  .sub-poster.noimg::after{content:'🎬';display:flex;align-items:center;justify-content:center;
+    height:104px;font-size:26px;opacity:.35}
+  .sub-info{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
+  .sub-year{font-size:11.5px;color:var(--fg-faint);font-family:var(--mono)}
+  .sub-name{font-weight:600;font-size:14.5px;margin:2px 0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .sub-meta{display:flex;align-items:center;gap:6px}
+
   /* ---------- 按钮 ---------- */
   button.act{
     background:var(--panel-2);border:1px solid var(--line);color:var(--fg);
@@ -346,6 +363,30 @@ async function renderDash(){
   const done = subs.filter(s => s.done).length;
   const catching = subs.length - done;
   const missing = subs.reduce((n,s)=> n + (s.missing ? s.missing.split('、').length : 0), 0);
+  // 追更中清单（show 模式才有"追"的概念）
+  const catchingList = subs.filter(s => !s.done && s.mode === 'show');
+  const token = localStorage.getItem('rmh_token') || '';
+  const posterSrc = s => '/api/poster?id=' + encodeURIComponent(s.id) + (token ? '&token=' + encodeURIComponent(token) : '');
+  // MP 风格订阅卡片
+  const subCard = s => {
+    const season = s.season ? ` S${String(s.season).padStart(2,'0')}` : '';
+    return `<div class="sub-card${s.done?' done':''}">
+      <div class="sub-poster"><img src="${posterSrc(s)}" loading="lazy" onerror="this.style.display='none';this.parentNode.classList.add('noimg')" alt=""></div>
+      <div class="sub-info">
+        <div class="sub-year">${esc(String(s.year || ''))}</div>
+        <div class="sub-name" title="${esc(s.name)}">${esc(s.name + season)}</div>
+        <div class="bar-wrap" style="margin:6px 0 4px">
+          <div class="bar"><i class="${s.done?'done':''}" style="width:${pct(s.owned,s.total)}%"></i></div>
+          <span class="num">${s.owned} / ${s.total}</span>
+        </div>
+        <div class="sub-meta">
+          <span class="pill accent" style="font-size:11px">📺 RSS订阅</span>
+          <span class="faint" style="font-size:11px;margin-left:auto">${ago(s.last_check)}</span>
+        </div>
+      </div>
+    </div>`;
+  };
+  const showCards = subs.filter(s => s.mode === 'show');
 
   box.innerHTML = `
   <div class="grid">
@@ -354,6 +395,12 @@ async function renderDash(){
       <div class="kpi">${catching}<small>部</small></div>
       <div class="row"><span>已完成</span><span>${done} 部</span></div>
       <div class="row"><span>仍有缺集</span><span>${missing} 处</span></div>
+      ${catchingList.length ? `<div style="margin-top:10px;border-top:1px solid var(--panel-2);padding-top:8px">
+        ${catchingList.map(s => `<div class="row" style="font-size:13px">
+          <span title="${esc(s.name)}">📺 ${esc(s.name)}${s.season?` S${String(s.season).padStart(2,'0')}`:''}</span>
+          <span class="num">${s.owned}/${s.total}</span>
+        </div>`).join('')}
+      </div>` : ''}
     </div>
     <div class="card">
       <h2>运行状态</h2>
@@ -399,6 +446,11 @@ async function renderDash(){
     <div class="hint">配 RSS 时先点这个：不需要 Emby/TMDB 也能用，失败会直接告诉你原因和怎么修。</div>
     <div id="feeds-result"></div>
   </div>
+
+  ${showCards.length ? `<div class="card" style="margin-top:14px">
+    <h2>追更卡片</h2>
+    <div class="sub-cards">${showCards.map(subCard).join('')}</div>
+  </div>` : ''}
 
   <div class="card" style="margin-top:14px">
     <h2>订阅进度</h2>

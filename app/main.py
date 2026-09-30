@@ -155,6 +155,8 @@ class Hub:
         self.web: Any = None
         # 后台附加任务（「已添加订阅」通知等），持引用防止被 GC 掉
         self._bg: set[asyncio.Task[Any]] = set()
+        # 网页仪表盘海报缓存：sub_id -> 海报字节（只缓存成功的）
+        self._web_posters: dict[str, bytes] = {}
 
     async def apply_settings(self, new_settings: Settings) -> None:
         """热重载配置：按新配置重建全部组件，然后关掉旧客户端。

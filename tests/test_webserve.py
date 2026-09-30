@@ -991,5 +991,98 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(b"JSON", data)
 
 
+class PosterEndpointTest(unittest.IsolatedAsyncioTestCase):
+    """仪表盘海报端点：/api/poster?id=xxx。"""
+
+    def _hub_with(self, subs: list[Subscription]):
+        from app.config import load_settings
+        from app.main import Hub
+
+        import tempfile
+
+        root = Path(tempfile.mkdtemp(prefix="poster-"))
+        cfg = root / "config"
+        cfg.mkdir(parents=True, exist_ok=True)
+        (cfg / "subscriptions.yaml").write_text("subscriptions: []\n", encoding="utf-8")
+        hub = Hub(load_settings(cfg, root / "state"))
+        hub.settings.subscriptions = subs
+        hub.settings.tmdb.api_key = "fake-key"
+        return hub
+
+    async def test_unknown_sub_and_feed_sub_404(self):
+        from app.config import Subscription
+
+        hub = self._hub_with([Subscription(id="feed1", name="源", mode="feed", rss="https://x/rss")])
+        ui = WebUI(hub)
+        try:
+            resp = await ui.h_poster({}, {"id": "nope"}, b"")
+            self.assertEqual(resp[0], 404, "不存在的订阅应 404")
+            resp = await ui.h_poster({}, {"id": "feed1"}, b"")
+            self.assertEqual(resp[0], 404, "feed 订阅没有海报，应 404")
+        finally:
+            await hub.aclose()
+
+    async def test_show_sub_returns_poster_bytes(self):
+        from app.config import Subscription
+
+        hub = self._hub_with([Subscription(id="s1", name="牧神记", tmdb_id=777, season=1)])
+        ui = WebUI(hub)
+
+        async def fake_resolve(name, tmdb_id, year=None):
+            return {"id": tmdb_id, "name": name, "poster_path": "/abc.jpg"}
+
+        async def fake_get(url):
+            return type("R", (), {"status_code": 200, "content": b"\xff\xd8fake"})()
+
+        hub.tmdb.resolve = fake_resolve  # type: ignore[assignment]
+        # 拦截 httpx 下载：monkeypatch AsyncClient
+        import httpx
+
+        class FakeClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                return await fake_get(url)
+
+        orig = httpx.AsyncClient
+        httpx.AsyncClient = FakeClient  # type: ignore[assignment]
+        try:
+            resp = await ui.h_poster({}, {"id": "s1"}, b"")
+            self.assertEqual(resp[0], 200)
+            self.assertEqual(resp[1], "image/jpeg")
+            self.assertEqual(resp[2], b"\xff\xd8fake")
+            # 第二次应命中内存缓存（不再查 TMDB/下载）
+            hub.tmdb.resolve = None  # type: ignore[assignment]  # 再调会崩，验证走缓存
+            resp2 = await ui.h_poster({}, {"id": "s1"}, b"")
+            self.assertEqual(resp2[2], b"\xff\xd8fake")
+        finally:
+            httpx.AsyncClient = orig
+            await hub.aclose()
+
+    async def test_tmdb_failure_returns_404(self):
+        from app.config import Subscription
+
+        hub = self._hub_with([Subscription(id="s2", name="某剧", tmdb_id=888)])
+        ui = WebUI(hub)
+
+        async def boom(name, tmdb_id, year=None):
+            raise RuntimeError("tmdb down")
+
+        hub.tmdb.resolve = boom  # type: ignore[assignment]
+        try:
+            resp = await ui.h_poster({}, {"id": "s2"}, b"")
+            self.assertEqual(resp[0], 404, "TMDB 失败应 404")
+            self.assertEqual(hub._web_posters, {}, "失败不缓存")
+        finally:
+            await hub.aclose()
+
+
 if __name__ == "__main__":
     unittest.main()

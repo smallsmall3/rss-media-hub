@@ -59,6 +59,11 @@ def html_response(html: str) -> tuple[int, str, bytes, dict[str, str]]:
     return 200, "text/html; charset=utf-8", html.encode("utf-8"), {}
 
 
+def binary_response(data: bytes, ctype: str) -> tuple[int, str, bytes, dict[str, str]]:
+    """返回二进制内容（海报图片等）。"""
+    return 200, ctype, data, {"Cache-Control": "no-store"}
+
+
 def _json_default(obj: Any) -> Any:
     if isinstance(obj, Path):
         return str(obj)
@@ -225,6 +230,7 @@ class WebUI:
             ("POST", "/api/labels/mappings", self.h_labels_mappings_post),
             ("GET", "/api/templates", self.h_templates_get),
             ("POST", "/api/templates", self.h_templates_post),
+            ("GET", "/api/poster", self.h_poster),
             ("GET", "/", self.h_index),
             ("GET", "/index.html", self.h_index),
         ]
@@ -939,6 +945,45 @@ class WebUI:
         # 让 Notifier 下次渲染时重新读模板
         self.hub.notifier._templates = None
         return {"ok": True, "path": str(path), "event": event, "message": f"模板「{event}」已保存"}
+
+    async def h_poster(self, headers, query, body):
+        """返回订阅对应的 TMDB 海报图片（仪表盘卡片用）。
+
+        只支持有 tmdb_id 的 show 模式订阅；feed 订阅没有"剧"的概念，
+        返回 404，前端显示占位样式。
+        成功结果缓存在内存里（hub._web_posters），失败不缓存（下次还试）。
+        """
+        import httpx
+
+        hub = self.hub
+        sub_id = (query.get("id") or "").strip()
+        sub = next((s for s in hub.settings.subscriptions if s.id == sub_id), None)
+        if sub is None or not sub.tmdb_id or not hub.settings.tmdb.enabled:
+            return text_response("no poster", 404)
+
+        cached = hub._web_posters.get(sub_id)
+        if cached:
+            return binary_response(cached, "image/jpeg")
+
+        try:
+            raw = await hub.tmdb.resolve(sub.name, sub.tmdb_id)
+            poster_path = str(raw.get("poster_path") or "")
+            if not poster_path:
+                return text_response("no poster", 404)
+            base = hub.settings.tmdb.image_base.rstrip("/")
+            if "/t/p/" in base:
+                base = base.split("/t/p/")[0] + "/t/p/w500"
+            async with httpx.AsyncClient(
+                timeout=20.0, follow_redirects=True, proxy=hub.settings.tmdb.proxy or None
+            ) as client:
+                resp = await client.get(f"{base}{poster_path}")
+            if resp.status_code != 200 or not resp.content:
+                return text_response("no poster", 404)
+            hub._web_posters[sub_id] = resp.content
+            return binary_response(resp.content, "image/jpeg")
+        except Exception as exc:  # noqa: BLE001
+            log.debug("仪表盘海报获取失败（%s）：%s", sub.name, exc)
+            return text_response("no poster", 404)
 
 
 def _scan_summary(result: ScanResult | None) -> dict[str, Any] | None:
