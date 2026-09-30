@@ -363,30 +363,39 @@ async function renderDash(){
   const done = subs.filter(s => s.done).length;
   const catching = subs.length - done;
   const missing = subs.reduce((n,s)=> n + (s.missing ? s.missing.split('、').length : 0), 0);
-  // 追更中清单（show 模式才有"追"的概念）
-  const catchingList = subs.filter(s => !s.done && s.mode === 'show');
+  // 追更中清单：**所有**未完成的订阅（feed 订阅也是"在追"，显示条目数）
+  const catchingList = subs.filter(s => !s.done);
   const token = localStorage.getItem('rmh_token') || '';
   const posterSrc = s => '/api/poster?id=' + encodeURIComponent(s.id) + (token ? '&token=' + encodeURIComponent(token) : '');
+  // 每条订阅右侧的进度/统计：show 用集数进度，feed 用条目数
+  const catchLine = s => s.mode === 'show'
+    ? `<span class="num">${s.owned}/${s.total}</span>`
+    : `<span class="num">${s.items_total} 条</span>`;
   // MP 风格订阅卡片
   const subCard = s => {
     const season = s.season ? ` S${String(s.season).padStart(2,'0')}` : '';
+    const isFeed = s.mode === 'feed';
+    const progressHtml = isFeed
+      ? `<div class="faint" style="font-size:12px;margin:6px 0 4px">转发 <span class="num">${s.items_total}</span> 条 · 已推送 <span class="num">${s.items_notified}</span></div>`
+      : `<div class="bar-wrap" style="margin:6px 0 4px">
+          <div class="bar"><i class="${s.done?'done':''}" style="width:${pct(s.owned,s.total)}%"></i></div>
+          <span class="num">${s.owned} / ${s.total}</span>
+        </div>`;
     return `<div class="sub-card${s.done?' done':''}">
       <div class="sub-poster"><img src="${posterSrc(s)}" loading="lazy" onerror="this.style.display='none';this.parentNode.classList.add('noimg')" alt=""></div>
       <div class="sub-info">
         <div class="sub-year">${esc(String(s.year || ''))}</div>
         <div class="sub-name" title="${esc(s.name)}">${esc(s.name + season)}</div>
-        <div class="bar-wrap" style="margin:6px 0 4px">
-          <div class="bar"><i class="${s.done?'done':''}" style="width:${pct(s.owned,s.total)}%"></i></div>
-          <span class="num">${s.owned} / ${s.total}</span>
-        </div>
+        ${progressHtml}
         <div class="sub-meta">
-          <span class="pill accent" style="font-size:11px">📺 RSS订阅</span>
+          <span class="pill ${isFeed?'warn':'accent'}" style="font-size:11px">${isFeed?'📡 全量转发':'📺 RSS订阅'}</span>
           <span class="faint" style="font-size:11px;margin-left:auto">${ago(s.last_check)}</span>
         </div>
       </div>
     </div>`;
   };
-  const showCards = subs.filter(s => s.mode === 'show');
+  // 所有订阅都出卡片（feed + show）
+  const showCards = subs;
 
   box.innerHTML = `
   <div class="grid">
@@ -397,8 +406,8 @@ async function renderDash(){
       <div class="row"><span>仍有缺集</span><span>${missing} 处</span></div>
       ${catchingList.length ? `<div style="margin-top:10px;border-top:1px solid var(--panel-2);padding-top:8px">
         ${catchingList.map(s => `<div class="row" style="font-size:13px">
-          <span title="${esc(s.name)}">📺 ${esc(s.name)}${s.season?` S${String(s.season).padStart(2,'0')}`:''}</span>
-          <span class="num">${s.owned}/${s.total}</span>
+          <span title="${esc(s.name)}">${s.mode === 'show' ? '📺' : '📡'} ${esc(s.name)}${s.season?` S${String(s.season).padStart(2,'0')}`:''}</span>
+          ${catchLine(s)}
         </div>`).join('')}
       </div>` : ''}
     </div>
@@ -448,7 +457,7 @@ async function renderDash(){
   </div>
 
   ${showCards.length ? `<div class="card" style="margin-top:14px">
-    <h2>追更卡片</h2>
+    <h2>我的订阅</h2>
     <div class="sub-cards">${showCards.map(subCard).join('')}</div>
   </div>` : ''}
 
