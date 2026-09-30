@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable
@@ -17,6 +18,16 @@ from .rss import FeedItem, human_size
 from .telegram import TelegramSender, esc
 
 log = logging.getLogger(__name__)
+
+_URL_SECRET_RE = re.compile(
+    r"(?:^|[?&])(?:passkey|passphrase|torrent_pass|authkey|api_key|apikey|secret|token)=[^&\s]+",
+    re.IGNORECASE,
+)
+
+
+def _url_has_secret(url: str) -> bool:
+    """链接里是否带密钥参数（passkey 之类）。"""
+    return bool(url) and bool(_URL_SECRET_RE.search(url))
 
 STATUS_ICON = {
     "active": "🟡",
@@ -38,6 +49,7 @@ class ItemView:
 
     title: str
     download_url: str = ""
+    detail_url: str = ""    # 详情页（不含 passkey），推送里优先用它
     size_text: str = "-"
     episode_label: str = ""
     published_text: str = ""
@@ -59,6 +71,7 @@ class ItemView:
         return cls(
             title=item.title,
             download_url=item.download_url or item.link,
+            detail_url=item.detail_url or item.link,
             size_text=item.size_text,
             episode_label=item.episode_label,
             published_text=published,
@@ -200,8 +213,9 @@ class Notifier:
         if not title_shown and (detailed or (top.kind in {"电影", "合集", "音乐", "图书", "软件"})):
             rows.append(f"   <i>{esc(self.shorten(top.title, 78))}</i>")
 
-        if top.download_url:
-            rows.append(f"   🔗 <a href=\"{esc(top.download_url)}\">下载</a>")
+        link = self.link_of(top)
+        if link:
+            rows.append(f"   🔗 <a href=\"{esc(link)}\">{'下载' if self.link_mode == 'download' else '查看'}</a>")
 
         # 其余版本折成一行
         if len(group) > 1:
@@ -343,6 +357,36 @@ class Notifier:
                 log.debug("下载 TMDB 海报失败：%s", exc)
         self._poster_cache[key] = data
         return data
+
+    def link_mode(self) -> str:
+        """当前链接模式。settings 缺失时退回安全的 detail。"""
+        settings = getattr(self, "settings", None)
+        telegram = getattr(settings, "telegram", None)
+        return getattr(telegram, "link_mode", "detail") or "detail"
+
+    def link_of(self, view: "ItemView") -> str:
+        """推送里该用哪个链接。
+
+        默认给**详情页**：直链里带着你的 PT passkey，推送被转发或截图
+        就等于把站点通行证交出去了。
+
+        安全兜底：即使配成 download 模式，只要直链里检出密钥、而详情页
+        又拿不到，就宁可少一个链接，也不发带密钥的。
+        """
+        mode = self.link_mode
+        detail = view.detail_url or ""
+        download = view.download_url or ""
+        safe_detail = detail if (detail and not _url_has_secret(detail)) else ""
+        if mode == "download" and download and not _url_has_secret(download):
+            return download
+        if mode == "download" and download and safe_detail:
+            # 直链带密钥：不能发出去，退回详情页
+            return safe_detail
+        if safe_detail:
+            return safe_detail
+        if download and not _url_has_secret(download):
+            return download
+        return ""
 
     async def poster_items(
         self,

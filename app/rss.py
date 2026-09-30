@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Iterable
+from urllib.parse import urlsplit
 
 try:  # httpx 只在实际抓取时才需要；解析函数保持零依赖，方便离线单测
     import httpx
@@ -66,9 +67,101 @@ NS = {
 }
 
 
+# PT 链接里的密钥参数名。出现在 URL 里就说明"这条链接是私人的"。
+_SECRET_PARAMS = (
+    "passkey",
+    "passphrase",
+    "torrent_pass",
+    "authkey",
+    "api_key",
+    "apikey",
+    "key",
+    "secret",
+    "token",
+)
+
+_SECRET_RE = re.compile(
+    r"(?:^|[?&])(?:" + "|".join(_SECRET_PARAMS) + r")=[^&\s]+",
+    re.IGNORECASE,
+)
+
+
+def _has_secret(url: str) -> bool:
+    """这个 URL 里是否带密钥（passkey 之类）。"""
+    return bool(url) and bool(_SECRET_RE.search(url))
+
+
+# 直链 → 详情页的映射：(匹配直链的路径关键词, 目标页面)
+_DETAIL_MAP = (
+    ("download.php", "details.php"),
+    ("download", "details"),
+    ("dl.php", "details.php"),
+    ("get.php", "details.php"),
+)
+
+# 有些站的详情页路径是 /torrent/123 这种。
+# 顺序很重要：更具体的规则必须排在前面，否则 `/torrents/download/55`
+# 会先被通用的 `/download/(\d+)` 命中，变成 `/torrents/torrent/55`。
+_DETAIL_REGEXES = (
+    (re.compile(r"/torrents/download/(\d+)"), r"/torrents/\1"),
+    (re.compile(r"/download/(\d+)"), r"/torrent/\1"),
+)
+
+
+def detail_from_download(url: str) -> str:
+    """把 PT 直链改写成详情页地址（去掉 passkey）。
+
+      https://pt.example/download.php?id=586947&passkey=SECRET
+        → https://pt.example/details.php?id=586947
+
+    推导不出来就返回空串 —— 调用方宁可少一个链接，也不要给出带密钥的。
+    """
+    if not url or not _has_secret(url) and "/download" not in url.lower():
+        # 本身就不带密钥、也不像下载链接：没必要改写
+        if not _has_secret(url):
+            return ""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    # 查询串里去掉密钥参数，保留其余（id 之类）
+    kept = [
+        pair
+        for pair in parsed.query.split("&")
+        if pair and pair.split("=", 1)[0].lower() not in _SECRET_PARAMS
+    ]
+    query = "&".join(kept)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path
+
+    for pattern, replacement in _DETAIL_REGEXES:
+        if pattern.search(path):
+            new_path = pattern.sub(replacement, path)
+            return f"{base}{new_path}" + (f"?{query}" if query else "")
+
+    low = path.lower()
+    for needle, target in _DETAIL_MAP:
+        if needle in low:
+            idx = low.rindex(needle)
+            new_path = path[:idx] + target + path[idx + len(needle) :]
+            return f"{base}{new_path}" + (f"?{query}" if query else "")
+
+    # 认不出下载路径，但这条链接带密钥：
+    # 兜底返回"去掉密钥参数"的版本 —— 打不开详情页也总比没有链接好，
+    # 而且绝不泄露 passkey。
+    if _has_secret(url):
+        return f"{base}{path}" + (f"?{query}" if query else "")
+
+    # 不是已知的下载路径、也没带密钥：不猜，交给调用方
+    return ""
+
+
 @dataclass
 class FeedItem:
     title: str
+
     link: str = ""
     download_url: str = ""
     guid: str = ""
@@ -103,6 +196,24 @@ class FeedItem:
     @property
     def size_text(self) -> str:
         return human_size(self.size_bytes)
+
+    @property
+    def detail_url(self) -> str:
+        """详情页地址（**不含 passkey**，可以安全转发）。
+
+        优先用 RSS 里的 link；但如果 link 本身就是带 passkey 的直链
+        （有些站 enclosure 和 link 指向同一个地址），就把它改写成详情页。
+
+        为什么需要这个：直链里的 passkey 就是你在 PT 站的通行证，
+        推送被转发或截图时等于把账号给出去了。详情页则谁点都得先登录。
+        """
+        if self.link and not _has_secret(self.link):
+            return self.link
+        derived = detail_from_download(self.download_url)
+        if derived:
+            return derived
+        # 推导不出来时，宁可返回空，也不要给出一个带密钥的链接
+        return ""
 
 
 def human_size(size: int | None) -> str:

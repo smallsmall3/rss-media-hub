@@ -130,3 +130,86 @@ class FeedParsingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DetailUrlTest(unittest.TestCase):
+    """详情页推导：推送里的链接不能带 passkey。
+
+    真实反馈：推送里直接给 PT 直链（含 passkey），转发给别人
+    就等于把站点通行证交出去了。
+    """
+
+    def test_chdbits_style(self):
+        from app.rss import detail_from_download
+
+        got = detail_from_download(
+            "https://ptchdbits.co/download.php?id=586947&passkey=6872a37a6b0b11aea7fbf452fbc35ae6"
+        )
+        self.assertEqual(got, "https://ptchdbits.co/details.php?id=586947")
+        self.assertNotIn("passkey", got)
+
+    def test_keeps_non_secret_params(self):
+        from app.rss import detail_from_download
+
+        got = detail_from_download("https://pt.example/download.php?id=1&passkey=X&type=1")
+        self.assertIn("id=1", got)
+        self.assertIn("type=1", got)
+        self.assertNotIn("passkey", got)
+
+    def test_path_style(self):
+        from app.rss import detail_from_download
+
+        self.assertEqual(
+            detail_from_download("https://pt.example/download/123?passkey=Z"),
+            "https://pt.example/torrent/123",
+        )
+
+    def test_torrents_download_not_double_substituted(self):
+        from app.rss import detail_from_download
+
+        self.assertEqual(
+            detail_from_download("https://pt.example/torrents/download/55?passkey=Q"),
+            "https://pt.example/torrents/55",
+        )
+
+    def test_non_download_url_not_rewritten(self):
+        from app.rss import detail_from_download
+
+        self.assertEqual(detail_from_download("https://pt.example/details.php?id=1"), "")
+
+    def test_magnet_cannot_be_derived(self):
+        from app.rss import detail_from_download
+
+        self.assertEqual(detail_from_download("magnet:?xt=urn:btih:abc"), "")
+
+
+class FeedItemDetailUrlTest(unittest.TestCase):
+    def _item(self, link="", download=""):
+        return FeedItem(title="t", link=link, download_url=download)
+
+    def test_prefers_link_when_clean(self):
+        it = self._item(
+            link="https://pt.example/details.php?id=1",
+            download="https://pt.example/download.php?id=1&passkey=SECRET",
+        )
+        self.assertEqual(it.detail_url, "https://pt.example/details.php?id=1")
+
+    def test_derives_when_link_is_also_download_url(self):
+        it = self._item(
+            link="https://pt.example/download.php?id=1&passkey=SECRET",
+            download="https://pt.example/download.php?id=1&passkey=SECRET",
+        )
+        self.assertEqual(it.detail_url, "https://pt.example/details.php?id=1")
+
+    def test_never_returns_url_with_secret(self):
+        for link, download in (
+            ("https://pt.example/download.php?id=1&passkey=S", "https://pt.example/download.php?id=1&passkey=S"),
+            ("", "https://pt.example/download.php?id=7&passkey=S"),
+            ("", "magnet:?xt=urn:btih:abc"),
+            ("https://pt.example/download.php?passkey=S", ""),
+        ):
+            it = self._item(link=link, download=download)
+            self.assertNotIn("passkey", it.detail_url, f"{link} / {download} 泄露了密钥")
+
+    def test_empty_when_nothing_derivable(self):
+        self.assertEqual(self._item(link="", download="magnet:?xt=urn:btih:abc").detail_url, "")

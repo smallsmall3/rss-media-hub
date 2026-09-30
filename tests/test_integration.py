@@ -315,7 +315,7 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Test Show", msg)
             self.assertIn("S01E03", msg)
             self.assertIn("0/4", msg)
-            self.assertIn("passkey=SECRET", msg, "下载链接必须带 passkey")
+            self.assertNotIn("passkey=SECRET", msg, "推送里绝不能带 passkey（转发就泄露了）")
             self.assertIn("1.40 GB", msg)
             state = await hub.db.get_sub(sub.id)
             self.assertEqual((state.owned, state.total, state.aired), (0, 4, 4))
@@ -623,7 +623,7 @@ class EndToEndTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("我的 PT 源", msg)
             self.assertIn("S01E01", msg)
             self.assertIn("S01E02", msg)
-            self.assertIn("passkey=SECRET", msg)
+            self.assertNotIn("passkey=SECRET", msg, "推送里绝不能带 passkey")
             # feed 模式不该出现入库进度
             self.assertNotIn("入库", msg)
             self.assertNotIn("集数统计", msg)

@@ -19,6 +19,9 @@ def view(title: str, ep: str = "", size: str = "1.00 GB") -> ItemView:
     return ItemView(
         title=title,
         download_url="https://pt.example/dl?passkey=SECRET",
+        # 真实链路里 FeedItem.detail_url 会算出"去掉密钥"的兜底地址；
+        # 这里手工构造时也要给上，否则测的不是真实行为。
+        detail_url="https://pt.example/dl",
         size_text=size,
         episode_label=ep,
         kind=kind,
@@ -212,11 +215,53 @@ class NotifierLayoutTest(unittest.TestCase):
         self.assertNotIn("<script>", text)
         self.assertIn("&lt;script&gt;", text)
 
-    def test_download_url_escaped_in_href(self):
-        item = view("某剧 S01E01", "S01E01")
-        item.download_url = "https://pt.example/dl?a=1&passkey=SECRET"
+    def test_download_url_never_leaks_passkey(self):
+        """推送里的链接不能带 passkey —— 转发或截图就等于泄露站点通行证。
+
+        原来这条断言的是"href 里要有 &amp;passkey=SECRET"，
+        那是刻意把密钥往外发的行为，已经改成默认指向详情页了。
+        """
+        # 用真实的 FeedItem → ItemView 转换，才能测到 detail_url 的推导
+        from app.rss import FeedItem
+
+        feed_item = FeedItem(
+            title="某剧 S01E01",
+            link="",
+            download_url="https://pt.example/dl?a=1&passkey=SECRET",
+        )
+        item = ItemView.from_feed(feed_item)
         text = self.notifier.render_feed_items(self.sub, [item])
-        self.assertIn("&amp;passkey=SECRET", text, "href 里的 & 必须转义成 &amp;")
+        self.assertNotIn("passkey", text, "绝不能把 passkey 写进推送")
+        self.assertNotIn("SECRET", text)
+        # 兜底：去掉密钥参数后的地址仍然可用，不能干脆不给链接
+        self.assertIn("https://pt.example/dl?a=1", text)
+
+    def test_link_uses_detail_page(self):
+        """有详情页时优先用详情页（谁点都得先登录）。"""
+        item = view("某剧 S01E01", "S01E01")
+        item.download_url = "https://pt.example/download.php?id=1&passkey=SECRET"
+        item.detail_url = "https://pt.example/details.php?id=1"
+        text = self.notifier.render_feed_items(self.sub, [item])
+        self.assertIn("details.php?id=1", text)
+        self.assertNotIn("passkey", text)
+        self.assertIn("查看", text, "详情页模式的文案是「查看」而不是「下载」")
+
+    def test_download_mode_keeps_clean_direct_link(self):
+        """配成 download 模式时，不带密钥的直链要保留（真能一键下载）。"""
+        notifier = Notifier.__new__(Notifier)
+        notifier.settings = type("S", (), {"telegram": type("t", (), {"link_mode": "download"})()})
+        clean = type("I", (), {"detail_url": "", "download_url": "https://pt.example/download.php?id=1"})()
+        self.assertEqual(notifier.link_of(clean), "https://pt.example/download.php?id=1")
+
+    def test_download_mode_still_refuses_secret_link(self):
+        """即使配成 download 模式，带密钥的直链也不能发。"""
+        notifier = Notifier.__new__(Notifier)
+        notifier.settings = type("S", (), {"telegram": type("t", (), {"link_mode": "download"})()})
+        leaky = type("I", (), {
+            "detail_url": "https://pt.example/details.php?id=1",
+            "download_url": "https://pt.example/download.php?id=1&passkey=SECRET",
+        })()
+        self.assertEqual(notifier.link_of(leaky), "https://pt.example/details.php?id=1")
 
     def test_empty_views(self):
         text = self.notifier.render_feed_items(self.sub, [])

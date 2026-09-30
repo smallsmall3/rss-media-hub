@@ -336,6 +336,22 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on", "y"}
 
 
+LINK_MODE_DETAIL = "detail"
+LINK_MODE_DOWNLOAD = "download"
+
+
+def _link_mode(value: Any) -> str:
+    """推送里的链接指向：详情页（安全）还是直链（方便）。
+
+    默认 detail —— 直链里带 passkey，转发推送就等于把站点通行证给出去了。
+    认不出来的值一律退回 detail（安全侧）。
+    """
+    text = _as_str(value).strip().lower()
+    if text in {"download", "dl", "direct", "direct_link", "直链"}:
+        return LINK_MODE_DOWNLOAD
+    return LINK_MODE_DETAIL
+
+
 def _env_int(name: str, default: int) -> int:
     raw = _env(name)
     if not raw:
@@ -358,6 +374,10 @@ class TelegramSettings:
     # feed（订阅源全量）模式是否给每条内容配海报。
     # 需要 TMDB 才能按片名搜海报；一条推送只发第一张，避免刷屏。
     feed_poster: bool = True
+    # 推送里的链接指向哪里：
+    #   detail   = 详情页（不含 passkey，转发也安全）← 默认
+    #   download = PT 直链（点一下就开始下载，但链接里有你的 passkey）
+    link_mode: str = "detail"
 
     @property
     def enabled(self) -> bool:
@@ -767,6 +787,7 @@ def load_settings(config_dir: Path | None = None, state_dir: Path | None = None)
         disable_notification=_env_bool("RMH_TG_SILENT", _as_bool(tg_file.get("disable_notification"), False)),
         send_poster=_env_bool("RMH_TG_SEND_POSTER", _as_bool(tg_file.get("send_poster"), True)),
         feed_poster=_env_bool("RMH_TG_FEED_POSTER", _as_bool(tg_file.get("feed_poster"), True)),
+        link_mode=_link_mode(_env("RMH_TG_LINK_MODE") or _as_str(tg_file.get("link_mode"))),
     )
 
     tmdb = TmdbSettings(
@@ -831,6 +852,7 @@ UI_EDITABLE: dict[str, dict[str, str]] = {
         "proxy": "str",
         "send_poster": "bool",
         "feed_poster": "bool",
+        "link_mode": "str",
         "disable_notification": "bool",
     },
     "tmdb": {
