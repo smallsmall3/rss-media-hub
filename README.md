@@ -529,7 +529,14 @@ m-team.cc=站点/m-team
 { "text": "🎉 {{title}}{% if year %}（{{year}}）{% endif %}{% if season %} {{season}}{% endif %} 已添加订阅" }
 ```
 
-**常用变量**：`title`（片名）、`name`（订阅名）、`year`、`season`、`size`、`badges`、`count`、`owned`、`total`、`progress`、`link`、`source`、`time`。
+`feed_new` 还支持 `image_caption` 字段——**自定义海报图下的文字**（片名/集号/规格那几行）：
+
+```
+{ "image_caption": "<b>{{title}}</b>{% if year %}（{{year}}）{% endif %}\n{{episode}}\n{{size}} · {{badges}}",
+  "text": "📡 {{name}}\n🆕 新条目 ×{{count}}" }
+```
+
+**常用变量**：`title`（片名，TMDB 中文名优先）、`name`（订阅名）、`year`、`season`、`size`、`badges`、`count`、`owned`、`total`、`progress`、`link`、`source`、`time`。`image_caption` 里还能用 `episode`（集号如 S01E06）。
 
 > 模板渲染失败会退回内置排版，不会把推送搞挂。文件底层存在 `config/notify_templates.txt`，也可直接改。
 

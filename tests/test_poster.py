@@ -444,5 +444,56 @@ class TitleConsistencyTest(unittest.TestCase):
         self.assertEqual(mv.clean_title(), "某电影")
 
 
+class CaptionTemplateTest(unittest.IsolatedAsyncioTestCase):
+    """feed_new 模板的 image_caption 字段可以自定义海报图下文字。"""
+
+    def _view(self, title, episode="", size="-"):
+        from app.notify import ItemView
+        from app.release import classify_item, describe_release
+
+        tags = describe_release(title)
+        kind, icon = classify_item(title, has_episode=bool(episode))
+        return ItemView(
+            title=title, episode_label=episode, size_text=size, kind=kind,
+            icon=icon, badges=tags.badges(), rank=tags.quality_rank(),
+        )
+
+    def _notifier(self, tpl: str | None):
+        from app.notify import Notifier
+
+        n = Notifier.__new__(Notifier)
+        n.settings = type("S", (), {"telegram": type("t", (), {"link_mode": "detail"})()})()
+        n._templates = {"feed_new": tpl} if tpl else {}
+        return n
+
+    async def test_image_caption_template_used(self):
+        class R:
+            async def resolve_detail(self, title):
+                return b"\xff\xd8x", "无可替代"
+
+            async def resolve(self, title):
+                return b"\xff\xd8x"
+
+        n = self._notifier(
+            '{"image_caption": "<b>{{title}}</b> {{episode}} {{size}} · {{badges}}", "text": "清单"}'
+        )
+        items = await n.poster_items(None, [self._view("无可替代.S01E06.2160p.WEB-DL", "S01E06", "4.61 GB")], resolver=R())
+        self.assertEqual(len(items), 1)
+        _, caption = items[0]
+        self.assertIn("无可替代", caption)
+        self.assertIn("S01E06", caption)
+        self.assertIn("4.61 GB", caption)
+
+    async def test_no_image_caption_field_falls_back_to_builtin(self):
+        class R:
+            async def resolve_detail(self, title):
+                return b"\xff\xd8x", "无可替代"
+
+        n = self._notifier('{"text": "清单"}')
+        items = await n.poster_items(None, [self._view("无可替代.S01E06.2160p", "S01E06", "4.61 GB")], resolver=R())
+        _, caption = items[0]
+        self.assertIn("无可替代", caption, "没配 image_caption 时用内置 caption")
+
+
 if __name__ == "__main__":
     unittest.main()

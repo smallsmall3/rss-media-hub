@@ -628,9 +628,53 @@ class Notifier:
                 continue
             if not data:
                 continue
-            caption = self._poster_caption(view, matched_name=matched_name)
+            # caption：feed_new 模板的 image_caption 字段优先，没配退回内置
+            caption = self._caption_from_template(view, matched_name) or self._poster_caption(
+                view, matched_name=matched_name
+            )
             out.append((data, caption))
         return out
+
+    def _caption_from_template(self, view: ItemView, matched_name: str) -> str | None:
+        """feed_new 模板里的 image_caption 字段 → 海报图下文字。
+
+        上下文变量（单条条目平铺）：title（TMDB 中文名优先）/ year /
+        episode / size / badges / kind / link / sub_name / source。
+        没配 image_caption 字段返回 None（用内置 caption）。
+        """
+        from .titleparse import parse_release_title
+        from .templates import parse_template_content, render_with_context
+
+        template = self._load_templates().get("feed_new")
+        if not template:
+            return None
+        try:
+            parsed_tpl = parse_template_content(template)
+        except Exception:  # noqa: BLE001
+            return None
+        cap_tpl = parsed_tpl.get("image_caption") if isinstance(parsed_tpl, dict) else None
+        if not isinstance(cap_tpl, str) or not cap_tpl.strip():
+            return None
+
+        parsed = parse_release_title(view.title)
+        name = matched_name or view.clean_title() or view.title
+        context = {
+            "title": name,
+            "name": name,
+            "year": parsed.year or "",
+            "episode": view.episode_label or "",
+            "size": view.size_text if view.size_text != "-" else "",
+            "badges": " · ".join(view.badges),
+            "kind": view.kind or "",
+            "icon": view.icon or "",
+            "link": self.link_of(view),
+            "source": "RSS 全量",
+        }
+        try:
+            return render_with_context(cap_tpl, context)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("海报 caption 模板渲染失败，退回内置排版：%s", exc)
+            return None
 
     def _poster_caption(self, view: ItemView, matched_name: str = "") -> str:
         """海报下面的说明文字。优先用 TMDB 中文名（matched_name），
