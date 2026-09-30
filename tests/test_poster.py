@@ -136,6 +136,27 @@ class YearParseTest(unittest.TestCase):
 
 
 class DisabledTest(unittest.IsolatedAsyncioTestCase):
+    async def test_resolve_detail_returns_matched_name(self):
+        """resolve_detail 要返回 TMDB 的中文名，供推送标题用。"""
+
+        class FakeTmdb:
+            async def search_tv(self, name, year=None):
+                return [{"name": "佳期如梦", "original_name": "The Girl in Blue",
+                         "poster_path": "/x.jpg", "first_air_date": "2010-06-04"}]
+
+        r = PosterResolver(FakeTmdb(), enabled=True)
+        r.image_base = "https://image.tmdb.org/t/p/w500"
+
+        async def fake_download(path):
+            return b"\xff\xd8x"
+
+        r._download = fake_download  # type: ignore[assignment]
+        hit = await r.resolve_detail("The Girl in Blue S01 1080p TX(2026)")
+        self.assertIsNotNone(hit)
+        data, name = hit
+        self.assertEqual(data, b"\xff\xd8x")
+        self.assertEqual(name, "佳期如梦", "应返回 TMDB 中文名而非英文原名")
+
     async def test_disabled_returns_none_without_calling_tmdb(self):
         calls = []
 

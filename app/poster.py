@@ -107,6 +107,7 @@ class PosterResolver:
         self._client = client
         self._owned = client is None
         self._cache: dict[str, bytes | None] = {}
+        self._detail_cache: dict[str, tuple[bytes, str] | None] = {}
         self._searches = 0
         self._cache_hits = 0
 
@@ -125,7 +126,7 @@ class PosterResolver:
 
     @property
     def stats(self) -> dict[str, int]:
-        return {"searches": self._searches, "cache_hits": self._cache_hits, "cached": len(self._cache)}
+        return {"searches": self._searches, "cache_hits": self._cache_hits, "cached": len(self._detail_cache)}
 
     def _remember(self, key: str, value: bytes | None) -> None:
         if len(self._cache) >= MAX_ENTRIES:
@@ -133,6 +134,12 @@ class PosterResolver:
             for k in list(self._cache)[: MAX_ENTRIES // 3]:
                 self._cache.pop(k, None)
         self._cache[key] = value
+
+    def _remember_detail(self, key: str, value: tuple[bytes, str] | None) -> None:
+        if len(self._detail_cache) >= MAX_ENTRIES:
+            for k in list(self._detail_cache)[: MAX_ENTRIES // 3]:
+                self._detail_cache.pop(k, None)
+        self._detail_cache[key] = value
 
     async def resolve(self, title: str) -> bytes | None:
         """按发布标题找海报字节；找不到返回 None。
@@ -142,25 +149,34 @@ class PosterResolver:
         `Su Dong Po Yu Hang Zhou De Gu Shi` 搜 0 条，
         但标题尾部方括号里的中文名能搜到。
         """
+        hit = await self.resolve_detail(title)
+        return hit[0] if hit else None
+
+    async def resolve_detail(self, title: str) -> tuple[bytes, str] | None:
+        """按发布标题找海报字节 + TMDB 匹配到的中文名；找不到返回 None。
+
+        相比 resolve() 多返回一个 matched_name：TMDB 条目的 name 字段
+        （zh-CN 语言下的中文名）。推送标题优先用它，就能显示中文名
+        而不是 PT 站发布的英文名（比如 The Girl in Blue → 佳期如梦）。
+        """
         if not self.enabled:
             return None
         parsed = parse_release_title(title)
         if not parsed.title or not parsed.confident:
-            # 拿不准就不猜：宁可这条没图
             return None
 
         key = f"{parsed.title}|{parsed.year or ''}"
-        if key in self._cache:
+        if key in self._detail_cache:
             self._cache_hits += 1
-            return self._cache[key]
+            return self._detail_cache[key]
 
-        data = None
+        result = None
         for term in search_terms(title):
-            data = await self._fetch(term, parsed.year)
-            if data:
+            result = await self._fetch_detail(term, parsed.year)
+            if result:
                 break
-        self._remember(key, data)
-        return data
+        self._remember_detail(key, result)
+        return result
 
     async def download_poster(self, poster_path: str) -> bytes | None:
         """按 TMDB 的 poster_path（如 /abc.jpg）下载海报字节。
@@ -172,7 +188,8 @@ class PosterResolver:
             return None
         return await self._download(poster_path)
 
-    async def _fetch(self, name: str, year: int | None) -> bytes | None:
+    async def _fetch_detail(self, name: str, year: int | None) -> tuple[bytes, str] | None:
+        """搜索 TMDB 并下载海报，返回 (海报字节, TMDB 匹配名)；找不到返回 None。"""
         if not self._image_base_ok():
             return None
         try:
@@ -190,7 +207,11 @@ class PosterResolver:
         path = best.get("poster_path")
         if not path:
             return None
-        return await self._download(path)
+        data = await self._download(path)
+        if data is None:
+            return None
+        matched = best.get("name") or best.get("original_name") or name
+        return data, str(matched)
 
     def _pick(self, results: list[dict[str, Any]], name: str, year: int | None) -> dict[str, Any] | None:
         """从搜索结果里挑最可信的一个。不够像就返回 None。"""

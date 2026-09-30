@@ -610,24 +610,37 @@ class Notifier:
             return []
         out: list[tuple[bytes, str]] = []
         for view in views[:max_items]:
+            matched_name = ""
             try:
-                data = await resolver.resolve(view.title)
+                # 优先用 resolve_detail 拿「海报 + TMDB 中文名」；
+                # 老 resolver 只有 resolve() 时退回纯字节。
+                resolve_detail = getattr(resolver, "resolve_detail", None)
+                if resolve_detail:
+                    hit = await resolve_detail(view.title)
+                    if hit:
+                        data, matched_name = hit
+                    else:
+                        data = None
+                else:
+                    data = await resolver.resolve(view.title)
             except Exception as exc:  # noqa: BLE001
                 log.debug("取海报失败（%s）：%s", view.title, exc)
                 continue
             if not data:
                 continue
-            caption = self._poster_caption(view)
+            caption = self._poster_caption(view, matched_name=matched_name)
             out.append((data, caption))
         return out
 
-    def _poster_caption(self, view: ItemView) -> str:
-        """海报下面的说明文字。与正文标题共用 view.clean_title()，保证一致。"""
+    def _poster_caption(self, view: ItemView, matched_name: str = "") -> str:
+        """海报下面的说明文字。优先用 TMDB 中文名（matched_name），
+        拿不到才退回标题解析出的片名。"""
         from .titleparse import parse_release_title
 
         parsed = parse_release_title(view.title)
         lines: list[str] = []
-        name = view.clean_title() or view.title
+        # 中文名（TMDB zh-CN name）优先，避免推送英文原名（The Girl in Blue → 佳期如梦）
+        name = matched_name or view.clean_title() or view.title
         head = f"<b>{esc(name)}</b>"
         if parsed.year:
             head += f"（{parsed.year}）"

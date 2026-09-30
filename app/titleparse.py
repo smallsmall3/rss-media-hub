@@ -45,6 +45,8 @@ _TECH_WORDS = {
     "subs", "sub", "subtitle", "subtitles", "audio", "rip", "full", "batch", "合集",
     # 季集标记
     "season", "s", "ep", "episode", "e",
+    # 片源平台
+    "tx", "tx视频", "腾讯", "youku", "iqiyi", "爱奇艺", "芒果", "mgtv", "bilibili", "b站",
 }
 
 # 匹配"整段就是技术标记"的正则（用于从右往左剥）
@@ -150,6 +152,12 @@ def _strip_episode_marks(text: str) -> tuple[str, int | None, int | None]:
         episode = int(m.group(1))
         text = text[: m.start()] + " " + text[m.end() :]
         return text, season, episode
+    # 单独季号：S01 / S1（后面没有集号，如「The Girl in Blue S01 1080p」）
+    m = re.search(r"(?i)\bS(\d{1,2})\b(?=\s|$|[.\-_（(])", text)
+    if m:
+        season = int(m.group(1))
+        text = text[: m.start()] + " " + text[m.end() :]
+        return text, season, episode
     m = re.search(r"(?i)\bE(?:P)?(\d{1,4})\b", text)
     if m:
         episode = int(m.group(1))
@@ -167,6 +175,9 @@ def _is_tech_token(cleaned: str, low: str) -> bool:
     因为把它们当规格剥掉，会把片名吃掉。
     """
     if low in _TECH_WORDS:
+        return True
+    # 合集标记：全24集 / 全 24 集 / 24集全
+    if re.match(r"^全?\s*\d{1,3}\s*[集话話]全?$", low) and re.search(r"\d", low):
         return True
     # 分辨率：2160 / 1080 / 720 这种裸数字（有的站不写 p）
     if re.match(r"^(?:4320|2160|1440|1080|900|720|576|480)$", low):
@@ -292,6 +303,14 @@ def parse_release_title(raw: str) -> ParsedTitle:
     text = (raw or "").strip()
     if not text:
         return result
+
+    # 0. 先提取「括号里的年份」：`（2026）` / `(2026)` / `[2026]`。
+    #    必须在删括号**之前**做，否则年份被 _BRACKET_TAG 连括号一起删掉，
+    #    年份信息就丢了（The Girl in Blue S01 1080p TX（2026）全24集 实测踩到）。
+    #    全角括号也算：很多中文标题用 （2026）。
+    _year_paren = re.search(r"[（(\[]\s*(19\d{2}|20\d{2})\s*[）)\]]", text)
+    if _year_paren:
+        result.year = int(_year_paren.group(1))
 
     # 1. 方括号标签。
     #    顺序很关键：**必须先删方括号，再处理结尾压制组**。
@@ -420,7 +439,8 @@ def parse_release_title(raw: str) -> ParsedTitle:
 
     # 5. 判断是否有把握：剥掉过技术段，且片名长度合理
     result.title = title
-    result.year = year
+    # 括号里提前提取的年份优先保留（局部 year 没找到时用 result.year）
+    result.year = year or result.year
     result.confident = bool(saw_tech and 1 <= len(title) <= 80)
     return result
 

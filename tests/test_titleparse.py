@@ -366,6 +366,23 @@ class SearchTermsTest(unittest.TestCase):
         raw = "Some Movie 2024 1080p BluRay x264[中字 【国英双音|简|繁|…"
         self.assertEqual(parse_release_title(raw).title, "Some Movie")
 
+    def test_fullwidth_year_paren_and_bare_season(self):
+        """「The Girl in Blue S01 1080p TX（2026）全24集」这类：
+        全角括号年份 + 单独季号 + 片源 TX + 合集「全N集」，都要剥干净。"""
+        raw = "The Girl in Blue S01 1080p TX（2026）全24集"
+        parsed = parse_release_title(raw)
+        self.assertEqual(parsed.title, "The Girl in Blue")
+        self.assertEqual(parsed.year, 2026, "全角括号里的年份要识别")
+        self.assertEqual(parsed.season, 1, "单独 S01（无集号）也要当季号")
+        self.assertTrue(parsed.confident)
+
+    def test_halfwidth_year_paren(self):
+        raw = "The Girl in Blue S01 1080p TX(2026)"
+        parsed = parse_release_title(raw)
+        self.assertEqual(parsed.title, "The Girl in Blue")
+        self.assertEqual(parsed.year, 2026)
+        self.assertEqual(parsed.season, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
