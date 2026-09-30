@@ -267,3 +267,68 @@ class EnvPriorityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LinkModeTest(unittest.TestCase):
+    """推送链接模式：默认必须是安全的详情页。
+
+    背景：真实反馈指出推送里给 PT 直链（含 passkey）不安全
+    —— 转发或截图就等于把站点通行证交出去。所以默认改成详情页，
+    并且认不出来的值一律退回安全侧。
+    """
+
+    def test_default_is_detail(self):
+        from app.config import TelegramSettings
+
+        self.assertEqual(TelegramSettings().link_mode, "detail")
+
+    def test_env_default_is_detail(self):
+        """完全不设任何环境变量时也要是 detail。"""
+        import os
+        from pathlib import Path
+
+        from app.config import load_settings
+
+        saved = {k: os.environ.get(k) for k in list(os.environ) if k.startswith("RMH_")}
+        for k in list(os.environ):
+            if k.startswith("RMH_"):
+                os.environ.pop(k)
+        os.environ["RMH_LOG_LEVEL"] = "CRITICAL"
+        try:
+            base = Path(os.environ.get("RMH_TEST_TMP") or Path(__file__).resolve().parent / ".tmp")
+            base.mkdir(parents=True, exist_ok=True)
+            root = base / "linkmode"
+            import shutil
+
+            shutil.rmtree(root, ignore_errors=True)
+            try:
+                s = load_settings(root / "config", root / "state")
+                self.assertEqual(s.telegram.link_mode, "detail")
+            finally:
+                shutil.rmtree(root, ignore_errors=True)
+        finally:
+            for k in list(os.environ):
+                if k.startswith("RMH_"):
+                    os.environ.pop(k)
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_unknown_value_falls_back_to_detail(self):
+        """打错字不能变成直链模式（那会泄露 passkey）。"""
+        from app.config import _link_mode
+
+        for bad in ("banana", "yes", "on", "true", "xxx", " "):
+            self.assertEqual(_link_mode(bad), "detail", f"{bad!r} 应该退回 detail")
+
+    def test_explicit_download_variants(self):
+        from app.config import _link_mode
+
+        for value in ("download", "dl", "direct", "direct_link", "直链", "DOWNLOAD", "Download"):
+            self.assertEqual(_link_mode(value), "download", f"{value!r} 应该识别为 download")
+
+    def test_empty_means_detail(self):
+        from app.config import _link_mode
+
+        self.assertEqual(_link_mode(""), "detail")
+        self.assertEqual(_link_mode(None), "detail")
