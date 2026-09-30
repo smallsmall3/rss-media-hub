@@ -162,5 +162,37 @@ class IdempotentTest(unittest.TestCase):
             self.assertEqual(again.title, first.title, f"{raw} 剥得不干净：{first.title}")
 
 
+class RealWorldTitleTest(unittest.TestCase):
+    """用户实际推送里出现的标题 —— 这些是最真实的回归用例。
+
+    下面第一条来自真实反馈：剧集标题没有年份，且带 `[TV Series]` 前缀、
+    `Apple TV+` 平台名。当时的 bug 是把整串
+    「Brothers S01 2160p Apple TV」当成了片名，拿去搜 TMDB 必然搜不到，
+    所以推送里没有海报。
+    """
+
+    def test_chdbits_tv_series_no_year(self):
+        raw = "[TV Series]Brothers S01 2160p Apple TV+ WEB-DL DDP.5.1 Atmos HDR10+ H.265-CHD"
+        p = parse_release_title(raw)
+        self.assertEqual(p.title, "Brothers", "不能把季号/分辨率/平台名混进片名")
+        self.assertIsNone(p.year)
+        self.assertTrue(p.confident, "能解析出片名就该给海报一次机会")
+
+    def test_platform_name_not_part_of_title(self):
+        p = parse_release_title("Some.Show.S02.2160p.NF.WEB-DL.DDP5.1")
+        self.assertEqual(p.title, "Some Show")
+
+    def test_season_marker_is_boundary(self):
+        """S01 要能当"规格开始"的分界，否则片名会被污染。"""
+        p = parse_release_title("True.Detective.S01E01.1080p.BluRay.x264")
+        self.assertEqual(p.title, "True Detective")
+
+    def test_bare_resolution_number_stripped(self):
+        """有的站不写 p，直接 2160。"""
+        p = parse_release_title("某电影 2020 2160 WEB-DL HEVC")
+        self.assertEqual(p.title, "某电影")
+        self.assertEqual(p.year, 2020)
+
+
 if __name__ == "__main__":
     unittest.main()

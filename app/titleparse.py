@@ -68,6 +68,25 @@ _BRACKET_TAG = re.compile(r"[\[【(（][^\]】)）]{0,40}[\]】)）]")
 # 结尾的压制组：-GROUP（前面必须有连字符）
 _TRAILING_GROUP = re.compile(r"-[A-Za-z0-9][A-Za-z0-9._-]{0,24}$")
 
+# 流媒体平台名：出现在标题里但不是片名的一部分
+# 注意 `tv` / `tv+`：`Apple TV+` 会被切成 Apple / TV+，
+# 而 `.strip("-+")` 会把 `TV+` 变成 `tv`，所以两种写法都要登记。
+_PLATFORM_WORDS = {
+    "apple", "appletv", "appletv+", "itunes", "netflix", "nf", "amzn", "amazon", "prime",
+    "disney", "disney+", "hulu", "hbo", "max", "hbomax", "paramount", "peacock",
+    "atvp", "atv", "ip", "iqiyi", "youku", "bilibili", "viu", "tv", "tv+", "series",
+}
+
+# 片名与技术规格的分界标记（整段匹配才算）
+_BOUNDARY_PATTERNS = [
+    re.compile(r"(?i)^S\d{1,2}E\d{1,4}$"),       # S01E03
+    re.compile(r"(?i)^S\d{1,2}$"),               # S01
+    re.compile(r"(?i)^E(?:P)?\d{1,4}$"),         # E03 / EP03
+    re.compile(r"^第\d{1,4}[集话話季]$"),          # 第3集
+    re.compile(r"(?i)^S\d{1,2}[-~]S?\d{1,2}$"),  # S01-S03
+    re.compile(r"^\d{1,2}季$"),                   # 3季
+]
+
 # 带点号的技术串：H.265 / H.264 / DDP5.1 / TrueHD.7.1 / DTS-HD.MA
 # 必须在按点号切段**之前**整段删掉，否则会被拆成 H 和 265 这种碎片。
 _DOTTED_TECH = re.compile(
@@ -140,14 +159,43 @@ def _is_tech_token(cleaned: str, low: str) -> bool:
     """
     if low in _TECH_WORDS:
         return True
+    # 分辨率：2160 / 1080 / 720 这种裸数字（有的站不写 p）
+    if re.match(r"^(?:4320|2160|1440|1080|900|720|576|480)$", low):
+        return True
     # 组合技术段：ddp5 / ddp5.1 / truehd7.1 / 10bit / 2ch / 24fps
-    if re.match(r"^(?:dd|ddp|dts|aac|ac3|eac3|truehd|atmos)\d", low):
+    if re.match(r"^(?:dd|ddp|dts|aac|ac3|eac3|truehd|atmos|flac)\d", low):
         return True
     if re.match(r"^\d+(?:bit|ch|kbps|fps|mbps)$", low):
+        return True
+    # 点号被切开后的残留：`DDP.5.1` → DDP / 5 / 1，其中的数字片段
+    if re.match(r"^\d(?:\.\d)?$", low):
+        return True
+    # 流媒体平台名（常出现在标题里，但不是片名）
+    if low in _PLATFORM_WORDS:
         return True
     # 站点常见的地区/语言短标记
     if low in {"hk", "tw", "cn", "jp", "kr", "us", "uk", "fr", "de"}:
         return True
+    return False
+
+
+def _is_boundary_token(cleaned: str) -> bool:
+    """这一段是不是「片名与技术规格的分界」。
+
+    最可靠的分界是年份，其次是季集标记（`S01` / `S01E03` / `第3集`）。
+    命中就说明"从这里往右全是规格"，可以停止剥离了。
+
+    为什么需要季集当分界：剧集标题经常没有年份
+    （`[TV Series]Brothers S01 2160p Apple TV+ WEB-DL ...`），
+    没有分界的话会把 `S01 2160p Apple TV` 全当成片名。
+    """
+    if not cleaned:
+        return False
+    if _YEAR_TOKEN.match(cleaned):
+        return True
+    for pattern in _BOUNDARY_PATTERNS:
+        if pattern.match(cleaned):
+            return True
     return False
 
 
@@ -186,9 +234,13 @@ def parse_release_title(raw: str) -> ParsedTitle:
     parts = [p for p in re.split(r"[._\s]+", text) if p]
 
     # 4. 两阶段剥离。
-    #    阶段一：从右往左剥规格，直到遇到年份。
-    #    阶段二：把剩下的（年份左边的）全部当作片名。
-    #    年份是最可靠的边界：右边全是规格，左边全是片名。
+    #    阶段一：从右往左剥规格，直到遇到"分界标记"（年份 / 季集）。
+    #    阶段二：把剩下的（分界左边的）全部当作片名。
+    #
+    #    为什么季集也算分界：剧集标题经常没有年份，例如
+    #      [TV Series]Brothers S01 2160p Apple TV+ WEB-DL DDP.5.1 Atmos HDR10+ H.265-CHD
+    #    只认年份的话，会把「Brothers S01 2160p Apple TV」整串当片名，
+    #    拿这个去搜 TMDB 必然搜不到（这是真实反馈里踩到的坑）。
     idx = len(parts) - 1
     year: int | None = None
     saw_tech = bool(season is not None or episode is not None)
@@ -198,10 +250,12 @@ def parse_release_title(raw: str) -> ParsedTitle:
             idx -= 1
             continue
         low = cleaned.lower()
-        if year is None and _YEAR_TOKEN.match(cleaned):
-            year = int(cleaned)
+        if _is_boundary_token(cleaned):
+            # 分界标记本身不算片名
+            if year is None and _YEAR_TOKEN.match(cleaned):
+                year = int(cleaned)
             saw_tech = True
-            idx -= 1  # 年份本身不算片名
+            idx -= 1
             break
         if _is_tech_token(cleaned, low):
             saw_tech = True
