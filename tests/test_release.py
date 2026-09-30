@@ -198,17 +198,21 @@ class NotifierLayoutTest(unittest.TestCase):
         )
         self.assertIn("E85", text)
         self.assertIn("1.40 GB", text)
-        self.assertIn("番剧 - 85", text, "单条推送应包含完整标题")
+        self.assertIn("番剧", text, "应显示解析出的干净片名")
         self.assertIn("1080p", text)
 
     def test_movie_uses_title_as_headline(self):
-        """没有集号时，标题必须当标题用，不能只显示"电影"两个字。"""
+        """没有集号时，用解析出的干净片名当标题，不显示"电影"两个字，
+        也不把规格/垃圾残片带进标题。"""
         text = self.notifier.render_feed_items(
             self.sub, [view("某电影.2024.2160p.UHD.BluRay.Remux.DV.HDR-OurBits", "", "58.00 GB")]
         )
-        self.assertIn("某电影.2024", text)
+        self.assertIn("某电影", text)
         self.assertIn("58.00 GB", text)
         self.assertNotIn("<b>电影</b>", text)
+        # 规格段不该出现在标题里（原 bug：标题把 2160p/UHD/BluRay 全带出来了）
+        self.assertNotIn("UHD", text)
+        self.assertNotIn("Remux", text)
 
     def test_html_is_escaped(self):
         text = self.notifier.render_feed_items(self.sub, [view("Show <script> S01E01", "S01E01")])

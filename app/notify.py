@@ -200,12 +200,12 @@ class Notifier:
         top = group[0]
         rows: list[str] = []
 
-        # 有集号就用集号做标题（一眼定位），没有集号就直接用标题做标题
+        # 有集号就用集号做标题（一眼定位），没有集号就解析出干净片名做标题
         title_shown = False
         if label:
             headline = f"<b>{esc(label)}</b>"
         else:
-            headline = f"<b>{esc(self.shorten(top.title, 60))}</b>"
+            headline = f"<b>{esc(self._clean_title(top.title))}</b>"
             title_shown = True
 
         head = f"{top.icon} {headline}"
@@ -218,7 +218,7 @@ class Notifier:
 
         # 标题信息只补一次：有集号且（只有一条 或 集号看不出是哪部剧）时补
         if not title_shown and (detailed or (top.kind in {"电影", "合集", "音乐", "图书", "软件"})):
-            rows.append(f"   <i>{esc(self.shorten(top.title, 78))}</i>")
+            rows.append(f"   <i>{esc(self.shorten(self._clean_title(top.title), 78))}</i>")
 
         link = self.link_of(top)
         if link:
@@ -235,6 +235,19 @@ class Notifier:
                 line += f" 等 {len(group) - 1} 个版本"
             rows.append(line)
         return "\n".join(rows)
+
+    @staticmethod
+    def _clean_title(title: str) -> str:
+        """把发布标题还原成干净片名（去掉规格、垃圾残片），用于卡片标题。
+
+        解析失败时退回原标题（截断），保证至少能显示点东西。
+        """
+        from .titleparse import parse_release_title
+
+        parsed = parse_release_title(title or "")
+        if parsed.title:
+            return parsed.title
+        return Notifier.shorten(title, 60)
 
     @staticmethod
     def shorten(text: str, limit: int) -> str:

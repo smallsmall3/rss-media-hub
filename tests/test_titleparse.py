@@ -351,6 +351,21 @@ class SearchTermsTest(unittest.TestCase):
                "[吞噬星空 | 第243集]")
         self.assertEqual(search_terms(raw)[0], "Swallowed Star")
 
+    def test_unclosed_bracket_at_end_is_dropped(self):
+        """RSS 源截断标题时末尾留下未闭合括号残片（`[疾患 【简英|…`），
+        必须连括号一起删掉，不能污染片名和别名（真实反馈踩到）。"""
+        raw = "Affection 2025 1080p BluRay x265 10bit DTS-ADE[疾患 【简英|繁英|简|繁|…"
+        parsed = parse_release_title(raw)
+        self.assertEqual(parsed.title, "Affection")
+        self.assertEqual(parsed.year, 2025)
+        # 别名也不能混进「疾患」「简英」这种残片
+        self.assertEqual(search_terms(raw), ["Affection"])
+
+    def test_multiple_unclosed_brackets_all_dropped(self):
+        """嵌套多个未闭合括号（[疾患 【简英|…）要全部删掉。"""
+        raw = "Some Movie 2024 1080p BluRay x264[中字 【国英双音|简|繁|…"
+        self.assertEqual(parse_release_title(raw).title, "Some Movie")
+
 
 if __name__ == "__main__":
     unittest.main()

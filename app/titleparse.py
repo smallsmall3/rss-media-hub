@@ -73,6 +73,10 @@ _BRACKET_TAG = re.compile(r"[\[【][^\[\]【】]*[\]】]|[（(][^（()）]*[）)
 # 结尾的压制组：-GROUP（前面必须有连字符）
 _TRAILING_GROUP = re.compile(r"-[A-Za-z0-9][A-Za-z0-9._-]{0,24}$")
 
+# 未闭合的括号：`[疾患 ` 或 `【简英|繁英|` 这种（RSS 源把标题截断了，括号没闭合）。
+# 这类残片绝不会是片名，直接连括号一起删到结尾。
+_UNCLOSED_BRACKET = re.compile(r"[\[【][^\[\]【】]*$")
+
 # 流媒体平台名：出现在标题里但不是片名的一部分
 # 注意 `tv` / `tv+`：`Apple TV+` 会被切成 Apple / TV+，
 # 而 `.strip("-+")` 会把 `TV+` 变成 `tv`，所以两种写法都要登记。
@@ -296,6 +300,16 @@ def parse_release_title(raw: str) -> ParsedTitle:
     #    如果先跑 `_TRAILING_GROUP`，`-UBWEB[` 不匹配 `-GROUP$`，
     #    这个组名就留在了标题里，接着被当成"内容词"，
     #    导致从右往左的剥离提前停住、`2160p` 之类残留进片名（实测踩到）。
+    #
+    #    先处理**未闭合**的括号：RSS 源有时把标题截断，末尾留下
+    #    `[疾患 【简英|繁英|简|繁|…` 这种只有左括号没有右括号的残片，
+    #    它绝不是片名，连括号一起删到结尾，否则会污染片名（实测踩到）。
+    #    循环删：一个标题里可能叠了好几个未闭合的括号（[疾患 【简英|…）。
+    for _ in range(5):
+        new_text = _UNCLOSED_BRACKET.sub("", text)
+        if new_text == text:
+            break
+        text = new_text
     text = _BRACKET_TAG.sub(" ", text)
     # 季范围（S01-S03）整体丢掉
     text = _RANGE_PATTERN.sub(" ", text)
@@ -492,6 +506,14 @@ def aliases(raw: str, *, include_body: bool = True) -> list[str]:
     text = raw or ""
     if not text:
         return []
+
+    # 先清掉未闭合的括号残片（`[疾患 【简英|…` 这种），否则「疾患」会从
+    # 正文里漏进别名，污染搜索词（实测踩到）。
+    for _ in range(5):
+        cleaned_text = _UNCLOSED_BRACKET.sub("", text)
+        if cleaned_text == text:
+            break
+        text = cleaned_text
 
     found: list[str] = []
     seen: set[str] = set()
