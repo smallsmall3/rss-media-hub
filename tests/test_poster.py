@@ -340,5 +340,88 @@ class PushWithPosterItemsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c[0] for c in n.tg.calls], ["photo"])
 
 
+class MessageStructureTest(unittest.TestCase):
+    """统一 Message 结构（对齐 MoviePilot）：image 只是 Message 的一个字段。"""
+
+    def test_message_fields_and_caption_fallback(self):
+        from app.notify import Message
+
+        m = Message(text="正文", title="标题", image=b"\xff\xd8x")
+        self.assertTrue(m.has_image)
+        self.assertEqual(m.caption, "标题", "没有显式 caption 时退回 title")
+
+        m2 = Message(text="正文", image=b"\xff\xd8x", image_caption="图下说明")
+        self.assertEqual(m2.caption, "图下说明", "显式 image_caption 优先")
+
+        m3 = Message(text="正文")
+        self.assertFalse(m3.has_image)
+
+
+class PushMessageTest(unittest.IsolatedAsyncioTestCase):
+    """push_message 投递统一 Message。"""
+
+    async def _notifier_with_fake_tg(self, photo_ok=True):
+        from app.notify import Notifier
+        from app.telegram import TgResult
+
+        class Tg:
+            def __init__(self):
+                self.bot_token = "x"
+                self.chat_id = "y"
+                self.calls = []
+
+            @property
+            def enabled(self):
+                return bool(self.bot_token and self.chat_id)
+
+            async def send_photo(self, photo, caption="", **kw):
+                self.calls.append(("photo", caption))
+                if photo_ok:
+                    return TgResult(True, message_id=2)
+                return TgResult(False, error="bad image")
+
+            async def send_message(self, text, **kw):
+                self.calls.append(("text", text))
+                return TgResult(True, message_id=1)
+
+        n = Notifier.__new__(Notifier)
+        n.settings = None
+        n.tg = Tg()
+        return n
+
+    async def test_push_message_sends_photo_then_text(self):
+        from app.notify import Message
+
+        n = await self._notifier_with_fake_tg()
+        ok = await n.push_message(Message(text="正文清单", image=b"\xff\xd8x", image_caption="标题"))
+        self.assertTrue(ok)
+        kinds = [c[0] for c in n.tg.calls]
+        self.assertEqual(kinds, ["photo", "text"])
+        self.assertEqual(n.tg.calls[0][1], "标题")
+
+    async def test_push_message_text_only(self):
+        from app.notify import Message
+
+        n = await self._notifier_with_fake_tg()
+        ok = await n.push_message(Message(text="纯文字"))
+        self.assertTrue(ok)
+        self.assertEqual([c[0] for c in n.tg.calls], ["text"])
+
+
+class TitleConsistencyTest(unittest.TestCase):
+    """海报 caption 与正文标题必须同源一致（这是本次重构的核心收益）。"""
+
+    def test_clean_title_shared_between_caption_and_card(self):
+        from app.notify import ItemView
+
+        # 带未闭合括号残片 + 规格的标题，caption 和卡片标题都要是干净片名
+        view = ItemView(title="Affection 2025 1080p BluRay x265 10bit DTS-ADE[疾患 【简英|繁英|简|繁|…")
+        self.assertEqual(view.clean_title(), "Affection")
+
+        # 电影标题：clean_title 不应带规格
+        mv = ItemView(title="某电影.2024.2160p.UHD.BluRay.Remux.DV.HDR-OurBits")
+        self.assertEqual(mv.clean_title(), "某电影")
+
+
 if __name__ == "__main__":
     unittest.main()

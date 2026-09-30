@@ -1,4 +1,10 @@
-"""消息排版：把"发现新种 / 入库进度 / 追完退订"渲染成 Telegram 消息。"""
+"""消息排版：把"发现新种 / 入库进度 / 追完退订"渲染成 Telegram 消息。
+
+设计对齐 MoviePilot：统一 `Message` 结构（title / text / image / link），
+海报不再是一条独立于正文的旁路 —— 它只是 `Message.image` 字段。
+最终渲染（render_html）与投递（push）都只消费这一个对象，天然不会
+出现"海报标题"和"正文标题"各拼一份、结果对不上的问题。
+"""
 
 from __future__ import annotations
 
@@ -51,6 +57,38 @@ def local_now() -> datetime:
 
 
 @dataclass
+class Message:
+    """一条待投递的推送消息（对齐 MoviePilot 的 Message 结构）。
+
+    字段语义：
+      * title：短标题（可选，用于海报 caption 或消息头）
+      * text：正文（HTML）
+      * image：海报字节（可选）
+      * link：主链接（详情页/直链，可选）
+      * image_caption：海报图下方配的文字；为空则用 title 兜底
+    """
+
+    text: str = ""
+    title: str = ""
+    image: bytes | None = None
+    link: str = ""
+    image_caption: str = ""
+
+    @property
+    def has_image(self) -> bool:
+        return bool(self.image)
+
+    @property
+    def caption(self) -> str:
+        """海报图的说明文字：优先显式 caption，其次 title。"""
+        return self.image_caption or self.title
+
+    def render_html(self) -> str:
+        """最终发给 Telegram 的 HTML 正文。"""
+        return self.text
+
+
+@dataclass
 class ItemView:
     """推送时需要的条目信息（可直接由 FeedItem 或 DB 行构造）。"""
 
@@ -65,6 +103,17 @@ class ItemView:
     icon: str = "📄"
     badges: list[str] = field(default_factory=list)   # 2160p · HDR · HEVC …
     rank: int = 0           # 规格高低，用于挑"最好的版本"
+
+    def clean_title(self, fallback_limit: int = 60) -> str:
+        """干净片名（去掉规格/垃圾残片）。海报 caption 与正文标题共用，
+        保证两处标题永远一致（这是对齐 MoviePilot「image 只是 Message 的一个
+        字段、从同一数据源渲染」的关键）。"""
+        from .titleparse import parse_release_title
+
+        parsed = parse_release_title(self.title or "")
+        if parsed.title:
+            return parsed.title
+        return Notifier.shorten(self.title, fallback_limit)
 
     @classmethod
     def from_feed(cls, item: FeedItem) -> "ItemView":
@@ -205,7 +254,7 @@ class Notifier:
         if label:
             headline = f"<b>{esc(label)}</b>"
         else:
-            headline = f"<b>{esc(self._clean_title(top.title))}</b>"
+            headline = f"<b>{esc(top.clean_title())}</b>"
             title_shown = True
 
         head = f"{top.icon} {headline}"
@@ -218,7 +267,7 @@ class Notifier:
 
         # 标题信息只补一次：有集号且（只有一条 或 集号看不出是哪部剧）时补
         if not title_shown and (detailed or (top.kind in {"电影", "合集", "音乐", "图书", "软件"})):
-            rows.append(f"   <i>{esc(self.shorten(self._clean_title(top.title), 78))}</i>")
+            rows.append(f"   <i>{esc(self.shorten(top.clean_title(), 78))}</i>")
 
         link = self.link_of(top)
         if link:
@@ -235,19 +284,6 @@ class Notifier:
                 line += f" 等 {len(group) - 1} 个版本"
             rows.append(line)
         return "\n".join(rows)
-
-    @staticmethod
-    def _clean_title(title: str) -> str:
-        """把发布标题还原成干净片名（去掉规格、垃圾残片），用于卡片标题。
-
-        解析失败时退回原标题（截断），保证至少能显示点东西。
-        """
-        from .titleparse import parse_release_title
-
-        parsed = parse_release_title(title or "")
-        if parsed.title:
-            return parsed.title
-        return Notifier.shorten(title, 60)
 
     @staticmethod
     def shorten(text: str, limit: int) -> str:
@@ -453,12 +489,12 @@ class Notifier:
         return out
 
     def _poster_caption(self, view: ItemView) -> str:
-        """海报下面的说明文字。"""
+        """海报下面的说明文字。与正文标题共用 view.clean_title()，保证一致。"""
         from .titleparse import parse_release_title
 
         parsed = parse_release_title(view.title)
         lines: list[str] = []
-        name = parsed.title or view.title
+        name = view.clean_title() or view.title
         head = f"<b>{esc(name)}</b>"
         if parsed.year:
             head += f"（{parsed.year}）"
@@ -470,6 +506,29 @@ class Notifier:
             lines.append(esc(" · ".join(meta)))
         return "\n".join(lines)
 
+    async def push_message(self, message: Message) -> bool:
+        """投递一条统一的 Message（对齐 MoviePilot 的 post_message）。
+
+        有 image 就发图（caption 取 image_caption 或 title），
+        正文 text 作为随后的文字消息；没有图就只发文字。
+        失败安全：图发不出去就退化为纯文字，绝不因为海报失败丢掉正文。
+        """
+        if not self.tg.enabled:
+            log.warning("Telegram 未配置，跳过推送：\n%s", message.text)
+            return False
+
+        photo_ok = False
+        if message.image:
+            sent = await self.tg.send_photo(message.image, caption=message.caption or "")
+            photo_ok = sent.ok
+            if not photo_ok:
+                log.debug("发海报失败，退化为纯文字：%s", sent.error)
+
+        if photo_ok and not message.text.strip():
+            return True
+        result = await self.tg.send_message(message.text)
+        return photo_ok or result.ok
+
     async def push(
         self,
         text: str,
@@ -477,7 +536,7 @@ class Notifier:
         poster: tuple[str, ReconcileResult | None] | None = None,
         poster_items: list[tuple[bytes, str]] | None = None,
     ) -> bool:
-        """发一条推送。
+        """发一条推送（兼容旧签名，内部统一走 Message）。
 
         poster：show 模式的单张海报（按剧，从 Emby/TMDB 取）。
         poster_items：feed 模式的「每条内容自己的海报」，
@@ -491,24 +550,14 @@ class Notifier:
             return False
 
         if poster_items:
-            data, caption = poster_items[0]
-            photo_ok = False
-            if data:
-                sent = await self.tg.send_photo(data, caption=caption)
-                photo_ok = sent.ok
-                if not photo_ok:
-                    log.debug("发海报失败，只发文字：%s", sent.error)
-            if photo_ok and not text.strip():
-                return True
-            # 海报后面跟着其余条目的文字清单
-            result = await self.tg.send_message(text)
-            return photo_ok or result.ok
+            message = Message(text=text)
+            if poster_items[0][0]:
+                message.image, message.image_caption = poster_items[0]
+            return await self.push_message(message)
 
         if poster:
             data = await self._poster(poster[0], poster[1])
-            if data:
-                sent = await self.tg.send_photo(data, caption="")
-                if not sent.ok:
-                    log.debug("发海报失败，退化为纯文本：%s", sent.error)
-        result = await self.tg.send_message(text)
-        return result.ok
+            message = Message(text=text, image=data)
+            return await self.push_message(message)
+
+        return await self.push_message(Message(text=text))
