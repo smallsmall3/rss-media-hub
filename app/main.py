@@ -70,6 +70,7 @@ class Hub:
         self.runtimes: dict[str, SubRuntime] = {}
         self.stats = HubStats()
         self._stop = asyncio.Event()
+        self._tasks: list[asyncio.Task[Any]] = []
         self._wake = asyncio.Event()
         self._reconcile_only: set[str] = set()
         self._lock = asyncio.Lock()
@@ -501,7 +502,12 @@ class Hub:
     # ------------------------------------------------------------------
     # 主循环
     # ------------------------------------------------------------------
-    async def run(self) -> None:
+    async def start(self) -> None:
+        """启动流程：预检 + 加载订阅 + 起三个后台循环。
+
+        和 run() 分开是有意的：smoke 测试只需要"能不能正常启动"，
+        不需要一直跑到有人按 Ctrl+C。
+        """
         import time
 
         self.stats.started_at = time.time()
@@ -510,11 +516,16 @@ class Hub:
         await self.preflight()
         await self.reload_subscriptions()
 
-        tasks = [
+        self._tasks = [
             asyncio.create_task(self._poll_loop(), name="poll"),
             asyncio.create_task(self._reconcile_loop(), name="reconcile"),
             asyncio.create_task(self._watch_loop(), name="watch"),
         ]
+
+    async def run(self) -> None:
+        """常驻运行：启动后一直等到 stop() 被调用。"""
+        await self.start()
+        tasks = self._tasks
         try:
             await self._stop.wait()
         finally:
@@ -817,6 +828,62 @@ async def cmd_scan(
             info(f"完整报告（JSON）已写入：{path}")
 
         return 0
+
+
+async def cmd_smoke(settings: Settings) -> int:
+    """冒烟测试：真的把服务和网页 UI 起一遍，确认能正常启动然后自动退出。
+
+    为什么需要它：`run` 是常驻循环，CI 里跑到那里会一直卡到超时；
+    而只跑 `--version` 又验证不了启动路径。这个命令两者兼顾：
+    走完整启动流程（预检 + 加载订阅 + 起循环 + 起网页服务），
+    确认 /healthz 有响应，然后自己停下。
+    """
+    from .webserve import WebUI
+
+    ok = True
+    async with Hub(settings) as hub:
+        await hub.start()
+        log.info("smoke: 启动流程完成，订阅 %d 条", len(hub.runtimes))
+
+        # 用端口 0 让系统分配，避免 CI 里端口被占
+        ui = WebUI(hub, host="127.0.0.1", port=0, token=settings.ui_token)
+        hub.web = ui
+        server = asyncio.create_task(ui.serve_forever())
+        try:
+            for _ in range(50):  # 最多等 5 秒
+                if ui.bound_port:
+                    break
+                await asyncio.sleep(0.1)
+            port = ui.bound_port
+            if not port:
+                print("❌ smoke: 网页服务没起来", file=sys.stderr)
+                return 1
+
+            import httpx
+
+            # trust_env=False：不要读 HTTP_PROXY 之类环境变量。
+            # 这是本机回环请求，走代理会得到 502。
+            async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+                health = await client.get(f"http://127.0.0.1:{port}/healthz")
+                if health.status_code != 200 or health.text.strip() != "ok":
+                    print(f"❌ smoke: /healthz 异常 {health.status_code} {health.text[:80]}", file=sys.stderr)
+                    ok = False
+                else:
+                    print(f"✅ smoke: /healthz 正常（127.0.0.1:{port}）")
+
+                status = await client.get(f"http://127.0.0.1:{port}/api/status")
+                if status.status_code != 200:
+                    print(f"❌ smoke: /api/status 异常 {status.status_code}", file=sys.stderr)
+                    ok = False
+                else:
+                    print("✅ smoke: /api/status 正常")
+        finally:
+            server.cancel()
+            await asyncio.gather(server, return_exceptions=True)
+            await hub.stop()
+
+    print("✅ smoke: 启动与关闭流程都正常" if ok else "❌ smoke: 有问题（见上）")
+    return 0 if ok else 1
 
 
 async def cmd_preflight(settings: Settings, *, notify: bool = False, json_only: bool = False) -> int:

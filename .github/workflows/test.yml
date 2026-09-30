@@ -41,12 +41,21 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -t . -v
 
-      - name: CLI smoke test（确认命令行入口可用，且能生成配置模板）
+      - name: CLI smoke test（确认能正常启动，且会生成配置模板）
         run: |
           set -e
           export RMH_CONFIG_DIR="$PWD/.ci-config"
           export RMH_STATE_DIR="$PWD/.ci-state"
           export RMH_HEALTH_PORT=0
-          python -m app --config-dir "$RMH_CONFIG_DIR" --state-dir "$RMH_STATE_DIR" run || true
+          # 注意：不要用 `python -m app run` —— 那是常驻轮询循环，永不退出，
+          # 会让这个 step 一直卡到超时。用 smoke：走完整启动流程后自己停下。
+          python -m app --config-dir "$RMH_CONFIG_DIR" --state-dir "$RMH_STATE_DIR" smoke
           test -f "$RMH_CONFIG_DIR/subscriptions.yaml" || { echo "没有生成 subscriptions.yaml"; exit 1; }
+          test -f "$RMH_CONFIG_DIR/config.yaml" || { echo "没有生成 config.yaml"; exit 1; }
           python -m app --config-dir "$RMH_CONFIG_DIR" --state-dir "$RMH_STATE_DIR" --version
+
+      - name: 部署自检（离线，确保 selfcheck 本身没坏）
+        run: |
+          export RMH_CONFIG_DIR="$PWD/.ci-config"
+          export RMH_STATE_DIR="$PWD/.ci-state"
+          python -m app --config-dir "$RMH_CONFIG_DIR" --state-dir "$RMH_STATE_DIR" selfcheck || true

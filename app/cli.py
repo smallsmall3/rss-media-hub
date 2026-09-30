@@ -21,6 +21,7 @@ from .main import (
     cmd_run,
     cmd_scan,
     cmd_selfcheck,
+    cmd_smoke,
     cmd_test_notify,
     cmd_web,
 )
@@ -203,6 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_pre.add_argument("--notify", action="store_true", help="同时真的发一条 Telegram 测试消息")
     p_pre.add_argument("--json", dest="json_only", action="store_true", help="只输出 JSON")
 
+    sub.add_parser("smoke", help="冒烟测试：起一遍服务和网页 UI，确认能正常启动（CI 用）")
+
     p_add = sub.add_parser("add", help="新增订阅（写入 subscriptions.yaml）")
     p_add.add_argument("name", help="剧名")
     p_add.add_argument("--rss", default="", help="PT 站 RSS 地址")
@@ -228,7 +231,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"❌ 配置错误：{exc}", file=sys.stderr)
         return 1
 
-    if command in {"run", "web"}:
+    # 这几个命令会真正读写 config/state，需要模板先就位
+    if command in {"run", "web", "smoke"}:
         ensure_config_files(settings)
 
     setup_logging(settings.log_level)
@@ -263,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
                 scan_only=args.scan_only,
             )
         )
+    if command == "smoke":
+        return asyncio.run(cmd_smoke(settings))
     if command == "preflight":
         return asyncio.run(cmd_preflight(settings, notify=args.notify, json_only=args.json_only))
     if command == "selfcheck":
