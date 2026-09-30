@@ -91,6 +91,13 @@ jobs:
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Prepare version info
+        id: ver
+        run: |
+          echo "commit=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME:-}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -101,6 +108,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # 构建信息注入镜像：界面左上角会显示「版本 · 提交」，
+          # 这样 pull 之后能直接确认跑的是哪次构建
+          build-args: |
+            RMH_BUILD_COMMIT=${{ steps.ver.outputs.commit }}
+            RMH_BUILD_TIME=${{ steps.ver.outputs.time }}
+            RMH_BUILD_TAG=${{ steps.ver.outputs.tag }}
           # cache-from/to 让后续构建快很多
           cache-from: type=gha
           cache-to: type=gha,mode=max

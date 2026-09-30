@@ -332,6 +332,11 @@ async function renderDash(){
   try { d = await api.get('/api/dashboard'); }
   catch(e){ box.innerHTML = '<div class="card">加载失败：' + esc(e.message) + '</div>'; return; }
   $('#ver').textContent = 'v' + d.version;
+  $('#ver').title = (d.build && d.build.display_full) ? ('构建：' + d.build.display_full) : '';
+  if (d.build && d.build.commit) {
+    // 带上构建提交，才能一眼确认 pull 到的是哪次构建
+    $('#ver').textContent = d.build.display;
+  }
 
   const h = d.health;
   const chip = (ok, label, extra) =>

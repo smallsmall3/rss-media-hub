@@ -54,6 +54,16 @@ RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh \
 VOLUME ["/config", "/state"]
 EXPOSE 8080
 
+# 构建信息：由 CI 通过 --build-arg 注入，界面左上角会显示
+# 「版本号 · 提交」。这样 pull 之后一眼就能确认跑的是哪次构建，
+# 不用去猜镜像 tag 有没有生效。
+ARG RMH_BUILD_COMMIT=""
+ARG RMH_BUILD_TIME=""
+ARG RMH_BUILD_TAG=""
+ENV RMH_BUILD_COMMIT=${RMH_BUILD_COMMIT} \
+    RMH_BUILD_TIME=${RMH_BUILD_TIME} \
+    RMH_BUILD_TAG=${RMH_BUILD_TAG}
+
 # /healthz 由程序内置的极简 HTTP 服务提供，不需要额外装 curl
 HEALTHCHECK --interval=60s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('RMH_HEALTH_PORT','8080')+'/healthz',timeout=4)" || exit 1

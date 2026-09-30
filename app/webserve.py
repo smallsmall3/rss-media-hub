@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from . import __version__
+from .version import BuildInfo
 from .config import UI_EDITABLE, apply_overrides, load_settings, save_subscriptions, Subscription
 from .libraryscan import ScanResult
 
@@ -414,6 +415,7 @@ class WebUI:
         return {
             "ok": True,
             "version": __version__,
+            "build": BuildInfo.current().to_dict(),
             "now": int(time.time()),
             "uptime_seconds": int(time.time() - (stats.started_at or time.time())),
             "started_at": int(stats.started_at or 0),
@@ -593,6 +595,7 @@ class WebUI:
         return {
             "ok": True,
             "version": __version__,
+            "build": BuildInfo.current().to_dict(),
             "uptime_seconds": int(time.time() - (self.hub.stats.started_at or time.time())),
             "subscriptions": [
                 {
