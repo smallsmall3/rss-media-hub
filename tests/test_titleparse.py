@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import unittest
 
-from app.titleparse import ParsedTitle, parse_release_title, search_query
+from app.titleparse import (
+    ParsedTitle,
+    aliases,
+    parse_release_title,
+    search_query,
+    search_terms,
+)
 
 
 class BasicTest(unittest.TestCase):
@@ -276,6 +282,74 @@ class NasRealTitlesTest(unittest.TestCase):
             parse_release_title("2001.A.Space.Odyssey.1968.2160p.UHD.BluRay.REMUX.HEVC").title,
             "2001 A Space Odyssey",
         )
+
+
+class ChineseAliasTest(unittest.TestCase):
+    """中文别名提取：国产动漫常用拼音当标题，TMDB 上只有中文条目。
+
+    真实案例：`Su Dong Po Yu Hang Zhou De Gu Shi` 在 TMDB 搜 0 条
+    （拼音没收录），但标题尾部方括号里有中文名，用中文能搜到。
+    """
+
+    def test_alias_from_bracket(self):
+        raw = ("[动漫(Animations)]Swallowed Star 2020 S01E243 2160p WEB-DL H265 AAC-UBWEB"
+               "[吞噬星空 | 第243集 | 导演: 沈乐平]")
+        got = aliases(raw)
+        self.assertIn("吞噬星空", got)
+        self.assertNotIn("沈乐平", got, "导演名不该被当别名")
+        self.assertNotIn("第243集", got)
+
+    def test_alias_with_slash(self):
+        raw = ("[动漫(Animations)]Gu An 2026 S01E11 2160p WEB-DL H265 AAC-UBWEB"
+               "[一斩苍穹/一斩苍穹3D动画]")
+        got = aliases(raw)
+        self.assertIn("一斩苍穹", got)
+
+    def test_classification_tag_is_not_alias(self):
+        """`[动漫(Animations)]` / `[TV Series]` 是分类标签，不是片名。"""
+        self.assertEqual(aliases("[动漫(Animations)]Some Show 2024 S01E01 1080p"), [])
+        self.assertEqual(aliases("[TV Series]Some Show S01 1080p"), [])
+
+    def test_chinese_drama_prefix_stripped(self):
+        raw = "[TV Series]Last Seen S01 2160p WEB-DL H.265-CHDWEB[澳剧：最后目击 第一季 第5集]"
+        got = aliases(raw)
+        self.assertIn("最后目击", got)
+        self.assertNotIn("澳剧", " ".join(got))
+        self.assertNotIn("第一季", " ".join(got))
+
+    def test_body_chinese_used_as_alias(self):
+        p = aliases("某剧.S01E05.2160p.HEVC.HDR.WEB-DL")
+        self.assertIn("某剧", p)
+
+    def test_no_alias_for_pure_latin_title(self):
+        self.assertEqual(aliases("The.Matrix.1999.2160p.UHD.BluRay.REMUX"), [])
+
+    def test_single_cjk_char_rejected(self):
+        """一个汉字太短，容易搜错，宁可不给。"""
+        self.assertEqual(aliases("[某] Some Show 2024 1080p"), [])
+
+
+class SearchTermsTest(unittest.TestCase):
+    def test_primary_term_is_clean_title(self):
+        raw = ("[动漫(Animations)]Raised by Demons Panda Li 2026 S01E12 2160p WEB-DL "
+               "H264 AAC-UBWEB[李熊猫/李熊猫与恶魔]")
+        terms = search_terms(raw)
+        self.assertEqual(terms[0], "Raised by Demons Panda Li", "主搜索词不能带技术段")
+        self.assertIn("李熊猫", terms)
+
+    def test_latin_title_only_gives_one_term(self):
+        self.assertEqual(search_terms("The.Matrix.1999.2160p.UHD.BluRay"), ["The Matrix"])
+
+    def test_terms_have_no_duplicates(self):
+        raw = "某剧.S01E01.1080p[某剧]"
+        terms = search_terms(raw)
+        self.assertEqual(len(terms), len(set(terms)))
+
+    def test_ubweb_group_not_in_primary_term(self):
+        """`-UBWEB` 曾被当成内容词，导致剥离提前停住、技术段残留。"""
+        raw = ("[动漫(Animations)]Swallowed Star 2020 S01E243 2160p WEB-DL H265 AAC-UBWEB"
+               "[吞噬星空 | 第243集]")
+        self.assertEqual(search_terms(raw)[0], "Swallowed Star")
 
 
 if __name__ == "__main__":

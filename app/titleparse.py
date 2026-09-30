@@ -234,6 +234,21 @@ def _is_empty_shell_token(token: str) -> bool:
     return not any(ch in "AEIOUaeiou" for ch in token)
 
 
+def _is_strippable(token: str) -> bool:
+    """剥离阶段判断：技术词、分界标记、站点残片，都算"该剥掉"。
+
+    把 `_is_empty_shell_token` 也算进来很重要：`-UBWEB` 这种发布组残片
+    既不是技术词也不是分界标记，如果只认前两者，从右往左的剥离会
+    在它身上立刻停住，后面真正的技术段（`2160p` 等）就全留在片名里了
+    —— 这正是"搜不到海报"的根因之一。
+    """
+    return (
+        _is_tech_token(token, token.lower())
+        or _is_boundary_token(token)
+        or _is_empty_shell_token(token)
+    )
+
+
 def _is_boundary_token(cleaned: str) -> bool:
     """这一段是不是「片名与技术规格的分界」。
 
@@ -274,10 +289,19 @@ def parse_release_title(raw: str) -> ParsedTitle:
     if not text:
         return result
 
-    # 1. 方括号标签 + 结尾压制组
+    # 1. 方括号标签。
+    #    顺序很关键：**必须先删方括号，再处理结尾压制组**。
+    #    因为有些站把别名方括号直接粘在组名后面：
+    #      `... AAC-UBWEB[李熊猫/李熊猫与恶魔]`
+    #    如果先跑 `_TRAILING_GROUP`，`-UBWEB[` 不匹配 `-GROUP$`，
+    #    这个组名就留在了标题里，接着被当成"内容词"，
+    #    导致从右往左的剥离提前停住、`2160p` 之类残留进片名（实测踩到）。
     text = _BRACKET_TAG.sub(" ", text)
     # 季范围（S01-S03）整体丢掉
     text = _RANGE_PATTERN.sub(" ", text)
+    # 先 rstrip：方括号替换会留下尾随空格，而 `_TRAILING_GROUP` 的 `$`
+    # 匹配不上"末尾带空格"的串，结果 `-UBWEB` 留了下来（实测踩到）
+    text = text.rstrip()
     text = _TRAILING_GROUP.sub("", text)
 
     # 2. 季集 + 带点的技术串（必须在切段之前处理，否则 H.265 会被拆成 H 和 265）
@@ -312,7 +336,7 @@ def parse_release_title(raw: str) -> ParsedTitle:
             saw_tech = True
             idx -= 1
             break
-        if _is_tech_token(cleaned, low):
+        if _is_strippable(cleaned):
             saw_tech = True
             idx -= 1
             continue
@@ -390,3 +414,137 @@ def parse_release_title(raw: str) -> ParsedTitle:
 def search_query(raw: str) -> str:
     """只要片名（搜索用）。解析失败时返回空串，不要拿整条标题去搜。"""
     return parse_release_title(raw).title
+
+
+# --------------------------------------------------------------------------
+# 中文别名提取
+# --------------------------------------------------------------------------
+#
+# 国产动漫/剧集常常用**拼音**当标题：
+#   [动漫(Animations)]Su Dong Po Yu Hang Zhou De Gu Shi 2026 S01E32 ...
+# 而 TMDB 上只有中文条目（`苏东坡与杭州的故事`），拿拼音去搜是 0 条 → 没海报。
+#
+# 好消息是这类标题的方括号里往往就带着中文名：
+#   ...[吞噬星空 | 第243集 | 导演: xxx]      ← `吞噬星空`
+#   ...[李熊猫/李熊猫与恶魔]                  ← `李熊猫`
+# 所以把中文名抓出来当**备选搜索词**：先用拼音搜，搜不到再用中文搜。
+
+# 别名里的噪音：集数、季度、导演/演员表、站点后缀
+_ALIAS_NOISE = re.compile(
+    r"(?:第\s*\d+\s*[集话話季]|\d+\s*[集话話季]|EP?\d+|S\d{1,2}E?\d{0,3}|"
+    r"第[一二三四五六七八九十]+季|[一二三四五六七八九十]+季|"
+    r"导演|主演|编剧|演员|类型|地区|语言|片长|上映|简介|剧情|"
+    r"澳剧|美剧|英剧|日剧|韩剧|国产剧|港剧|台剧|泰剧|新剧|"
+    r"简繁|中字|内封|外挂|国语|粤语|日语|双语|原盘|"
+    r"WEB-?DL|BluRay|HDR|H\.?26[45]|HEVC|AVC|AAC|DDP|DTS|Atmos|"
+    r"\d{3,4}p|\d+bit|\d+Fps|UBWEB|CHDWEB|X264|X265|"
+    r"Animations?|Animation|Series|Movie|Documentary)",
+    re.IGNORECASE,
+)
+
+# 演职员表：`导演: 沈乐平` / `主演：xxx` —— 关键词后面的人名要整段删掉。
+# 只删"导演"这个词是不够的，名字会留下来被当成别名（实测踩到）。
+_ALIAS_CREDITS = re.compile(
+    r"(?:导演|主演|编剧|演员|配音|原作|监制|制片)\s*[:：]?\s*[^|｜/\[\]【】]*",
+)
+
+# 语言/地区前缀：`澳剧：最后目击` → `最后目击`
+_ALIAS_PREFIX = re.compile(
+    r"^(?:澳剧|美剧|英剧|日剧|韩剧|国产剧|港剧|台剧|泰剧|新剧|"
+    r"欧美剧|日番|国漫|动漫|动画)\s*[:：]?\s*",
+)
+
+# 分类标签不算别名
+_ALIAS_STOPWORDS = {
+    "动漫", "动画", "动画片", "综艺", "纪录片", "电视剧", "电影", "合集", "体育",
+    "animations", "animation", "tvseries", "tv series", "tv", "series",
+    "movie", "movies", "documentary", "music", "sports", "anime",
+}
+
+_CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def _clean_alias(text: str) -> str:
+    """把一段别名文本清洗成可搜索的名字。"""
+    out = text or ""
+    # 先整段删掉演职员表（关键词连人名一起）
+    out = _ALIAS_CREDITS.sub(" ", out)
+    # 再去掉语言/地区前缀
+    out = _ALIAS_PREFIX.sub("", out)
+    # 最后删剩余噪音词
+    out = _ALIAS_NOISE.sub(" ", out)
+    # 去掉各种括号与分隔符残留
+    out = re.sub(r"[\[\]【】()（）<>《》|｜/\\,，;；:：\-—_·*]+", " ", out)
+    out = re.sub(r"\s{2,}", " ", out).strip()
+    return out
+
+
+def aliases(raw: str, *, include_body: bool = True) -> list[str]:
+    """从发布标题里提取可搜索的中文别名（按可信度排序）。
+
+    来源有两处：
+      1. 方括号/【】里的中文（`[吞噬星空 | 第243集...]` → `吞噬星空`）
+      2. 标题正文里的中文段（`某某剧.S01E01.1080p` → `某某剧`）
+
+    全部清洗过、去过重、去掉了分类标签；拿不准的一律不给，
+    因为搜错会推一张不相干的图。
+    """
+    text = raw or ""
+    if not text:
+        return []
+
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> None:
+        cleaned = _clean_alias(candidate)
+        if not cleaned or not _CJK.search(cleaned):
+            return
+        # 去掉空格和标点后再比对停用词，这样 `动漫(Animations)` 也能命中"动漫"
+        bare = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", cleaned.lower())
+        for stop in _ALIAS_STOPWORDS:
+            if bare == re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", stop.lower()):
+                return
+        # 去掉分类前缀后如果只剩停用词/空，也不要
+        stripped = re.sub(r"^(动漫|动画|综艺|纪录片|电视剧|电影|合集)+\s*", "", cleaned).strip()
+        if stripped and len(_CJK.findall(stripped)) >= 2:
+            cleaned = stripped
+        # 太短（少于 2 个汉字）或太长都不靠谱
+        cjk_count = len(_CJK.findall(cleaned))
+        if cjk_count < 2 or len(cleaned) > 40:
+            return
+        if cleaned in seen:
+            return
+        seen.add(cleaned)
+        found.append(cleaned)
+
+    # 1. 方括号里的内容（可能有多个，逐个试）
+    for bracket in re.findall(r"[\[【]([^\[\]【】]+)[\]】]", text):
+        for piece in re.split(r"[|｜/]", bracket):
+            add(piece)
+
+    # 2. 标题正文里的中文段（去掉方括号部分，避免重复）
+    if include_body:
+        body = re.sub(r"[\[【][^\[\]【】]*[\]】]", " ", text)
+        for piece in re.split(r"[._\s|｜/]+", body):
+            add(piece)
+
+    # 长的（信息更完整）排前面
+    found.sort(key=len, reverse=True)
+    return found
+
+
+def search_terms(raw: str) -> list[str]:
+    """按优先级给出所有可搜索的名字：先拼音/原文，再中文别名。
+
+    PosterResolver 会依次尝试，任何一个搜到就停 —— 这样
+    `Su Dong Po Yu ...`（拼音，TMDB 没有）能退到中文名去搜。
+    """
+    terms: list[str] = []
+    parsed = parse_release_title(raw)
+    if parsed.title and parsed.confident:
+        terms.append(parsed.title)
+    for alias in aliases(raw):
+        if alias not in terms:
+            terms.append(alias)
+    return terms
