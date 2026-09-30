@@ -997,16 +997,34 @@ async function renderSettings(){
   </div>
 
   <div class="card" style="margin-top:14px">
-    <h2>通知模板 <span class="muted" style="font-weight:normal">notify_templates.txt</span></h2>
-    <textarea id="c_templates" rows="16" style="width:100%;font-family:var(--mono,monospace);font-size:12px" placeholder="=== feed_new ===&#10;{&#10;  &quot;text&quot;: &quot;📡 {{name}}&#10;🆕 新条目 ×{{count}}&#10;{{items|join(...)}}&quot;&#10;}&#10;&#10;=== sub_added ===&#10;{ &quot;text&quot;: &quot;🎉 {{title}} ({{year}}) {{season}} 已添加订阅&quot; }"></textarea>
+    <h2>通知模板 <span class="muted" style="font-weight:normal">每类事件一个输入框</span></h2>
+    <div class="tpl-item" style="margin-bottom:12px">
+      <div class="tpl-head"><b>添加订阅确认</b> <code>sub_added</code></div>
+      <textarea id="tpl_sub_added" rows="3" style="width:100%;font-family:var(--mono,monospace);font-size:12px" placeholder='{ "text": "🎉 {{title}}{% if year %}（{{year}}）{% endif %} 已添加订阅" }'></textarea>
+    </div>
+    <div class="tpl-item" style="margin-bottom:12px">
+      <div class="tpl-head"><b>订阅源全量新种</b> <code>feed_new</code></div>
+      <textarea id="tpl_feed_new" rows="5" style="width:100%;font-family:var(--mono,monospace);font-size:12px" placeholder='{ "text": "📡 {{name}}\n🆕 新条目 ×{{count}}" }'></textarea>
+    </div>
+    <div class="tpl-item" style="margin-bottom:12px">
+      <div class="tpl-head"><b>按剧新资源</b> <code>show_new</code></div>
+      <textarea id="tpl_show_new" rows="5" style="width:100%;font-family:var(--mono,monospace);font-size:12px" placeholder='{ "text": "🎬 {{name}}\n{{progress}}" }'></textarea>
+    </div>
+    <div class="tpl-item" style="margin-bottom:12px">
+      <div class="tpl-head"><b>入库通知</b> <code>library_update</code></div>
+      <textarea id="tpl_library_update" rows="4" style="width:100%;font-family:var(--mono,monospace);font-size:12px" placeholder='{ "text": "📥 {{name}} 已入库\n{{progress}}" }'></textarea>
+    </div>
+    <div class="tpl-item" style="margin-bottom:12px">
+      <div class="tpl-head"><b>追完通知</b> <code>done</code></div>
+      <textarea id="tpl_done" rows="4" style="width:100%;font-family:var(--mono,monospace);font-size:12px" placeholder='{ "text": "🏁 {{name}} 订阅完成\n{{progress}}" }'></textarea>
+    </div>
     <div class="actions">
-      <button class="act" onclick="loadTemplates()">读取</button>
-      <button class="act primary" onclick="saveTemplates()">保存模板</button>
+      <button class="act" onclick="loadTemplates()">读取全部</button>
+      <button class="act primary" onclick="saveTemplates()">保存全部</button>
     </div>
     <div class="hint">
-      用 <code>=== 事件名 ===</code> 分段，段内是 MoviePilot 同款 <b>字典模板</b>（Jinja2 语法：<code>{{变量}}</code>、<code>{% if %}...{% endif %}</code>）。<br>
-      支持的事件：<code>feed_new</code>（订阅源全量新种）、<code>show_new</code>（按剧新资源）、<code>library_update</code>（入库）、<code>done</code>（追完）、<code>sub_added</code>（添加订阅）。<br>
-      常用变量：<code>title</code> <code>name</code> <code>year</code> <code>season</code> <code>size</code> <code>badges</code> <code>count</code> <code>owned</code> <code>total</code> <code>link</code>。没配的事件退回内置排版。
+      每个事件一个框，留空 = 退回内置排版。模板是 MoviePilot 同款 <b>Jinja2 字典</b>：<code>{{变量}}</code>、<code>{% if %}...{% endif %}</code>。<br>
+      常用变量：<code>title</code> <code>name</code> <code>year</code> <code>season</code> <code>size</code> <code>badges</code> <code>count</code> <code>owned</code> <code>total</code> <code>progress</code> <code>link</code>。
     </div>
   </div>
 
@@ -1120,16 +1138,31 @@ async function saveMappings(){
 async function loadTemplates(){
   try {
     const r = await api.get('/api/templates');
-    $('#c_templates').value = r.text || '';
+    const t = r.templates || {};
+    $('#tpl_sub_added').value = t.sub_added || '';
+    $('#tpl_feed_new').value = t.feed_new || '';
+    $('#tpl_show_new').value = t.show_new || '';
+    $('#tpl_library_update').value = t.library_update || '';
+    $('#tpl_done').value = t.done || '';
   } catch(e){ toast('读取失败：' + e.message, 'err'); }
 }
 
 async function saveTemplates(){
-  try {
-    const text = $('#c_templates').value;
-    const r = await api.post('/api/templates', {text: text});
-    toast(r.message || '已保存', 'ok');
-  } catch(e){ toast('保存失败：' + e.message, 'err'); }
+  const events = {
+    sub_added: 'tpl_sub_added',
+    feed_new: 'tpl_feed_new',
+    show_new: 'tpl_show_new',
+    library_update: 'tpl_library_update',
+    done: 'tpl_done',
+  };
+  let saved = 0, failed = 0;
+  for (const [event, id] of Object.entries(events)) {
+    try {
+      await api.post('/api/templates', {event: event, text: $('#' + id).value});
+      saved++;
+    } catch(e){ failed++; toast(`保存 ${event} 失败：${e.message}`, 'err'); }
+  }
+  if (saved) toast(`已保存 ${saved} 个模板` + (failed ? `，${failed} 个失败` : ''), failed ? 'err' : 'ok');
 }
 
 /* ---------------- 路由 ---------------- */

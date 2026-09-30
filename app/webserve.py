@@ -906,25 +906,39 @@ class WebUI:
         return {"ok": True, "path": str(path), "message": "映射表已保存"}
 
     async def h_templates_get(self, headers, query, body) -> dict[str, Any]:
-        """读取通知模板文件（纯文本）内容。"""
+        """读取所有通知模板，返回 {事件名: 模板文本}。"""
+        from .templates import load_templates
+
         path = self.hub.settings.notify_templates_file
-        text = ""
-        if path.exists():
-            text = path.read_text(encoding="utf-8")
-        return {"ok": True, "path": str(path), "text": text}
+        templates = load_templates(path)
+        return {"ok": True, "path": str(path), "templates": templates}
 
     async def h_templates_post(self, headers, query, body) -> dict[str, Any]:
-        """保存通知模板，并热重载（下一次推送就生效）。"""
+        """保存某个事件的模板，并热重载。
+
+        body 形如 {"event": "sub_added", "text": "{...}"}。
+        text 为空表示删除该事件的模板（退回内置排版）。
+        """
+        from .templates import load_templates, save_templates
+
         payload = parse_json_body(body)
+        event = str(payload.get("event") or "").strip()
+        if not event:
+            raise ValueError("缺少 event 字段（事件名）")
         text = payload.get("text")
         if text is None:
-            raise ValueError("缺少 text 字段（模板文件完整内容）")
+            raise ValueError("缺少 text 字段（模板内容，可为空表示删除）")
+
         path = self.hub.settings.notify_templates_file
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        current = load_templates(path)
+        if str(text).strip():
+            current[event] = str(text)
+        else:
+            current.pop(event, None)
+        save_templates(path, current)
         # 让 Notifier 下次渲染时重新读模板
         self.hub.notifier._templates = None
-        return {"ok": True, "path": str(path), "message": "模板已保存"}
+        return {"ok": True, "path": str(path), "event": event, "message": f"模板「{event}」已保存"}
 
 
 def _scan_summary(result: ScanResult | None) -> dict[str, Any] | None:

@@ -119,3 +119,21 @@ def load_templates(path: Path | None) -> dict[str, str]:
         out[current] = "\n".join(buf).strip()
 
     return {k: v for k, v in out.items() if v}
+
+
+def save_templates(path: Path | None, templates: dict[str, str]) -> None:
+    """把 {事件名: 模板文本} 写回 ``=== 事件名 ===`` 分隔格式。
+
+    空值（None / 空串）的条目会被跳过（即"删除该模板"）。
+    """
+    if not path:
+        return
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    for event, text in templates.items():
+        if not text or not str(text).strip():
+            continue
+        lines.append(f"=== {event} ===")
+        lines.append(str(text).strip())
+        lines.append("")
+    Path(path).write_text("\n".join(lines).strip() + ("\n" if lines else ""), encoding="utf-8")

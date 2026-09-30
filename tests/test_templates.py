@@ -9,7 +9,13 @@ import shutil
 import unittest
 from pathlib import Path
 
-from app.templates import load_templates, parse_template_content, render_dict_template, render_with_context
+from app.templates import (
+    load_templates,
+    parse_template_content,
+    render_dict_template,
+    render_with_context,
+    save_templates,
+)
 
 _counter = itertools.count()
 
@@ -89,6 +95,22 @@ class LoadTemplatesTest(unittest.TestCase):
     def test_missing_file(self):
         with temp_dir() as root:
             self.assertEqual(load_templates(root / "nope.txt"), {})
+
+    def test_save_then_load_roundtrip(self):
+        with temp_dir() as root:
+            p = root / "notify_templates.txt"
+            save_templates(p, {"sub_added": '{"text": "🎉 {{title}}" }', "feed_new": '{"text": "x"}'})
+            loaded = load_templates(p)
+            self.assertIn("sub_added", loaded)
+            self.assertIn("feed_new", loaded)
+
+    def test_save_skips_empty(self):
+        with temp_dir() as root:
+            p = root / "notify_templates.txt"
+            save_templates(p, {"sub_added": "", "feed_new": '{"text": "x"}'})
+            loaded = load_templates(p)
+            self.assertNotIn("sub_added", loaded, "空模板不写盘")
+            self.assertIn("feed_new", loaded)
 
 
 class NotifierTemplateOverrideTest(unittest.TestCase):
