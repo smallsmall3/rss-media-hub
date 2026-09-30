@@ -103,8 +103,16 @@ class CheckFeedsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report.healthy)
         self.assertEqual(report.checks[0].item_count, 2)
         self.assertEqual(len(report.checks[0].previews), 2)
-        # 最新排前面
-        self.assertEqual(report.checks[0].newest, "02-05 20:00")
+        # 最新排前面。
+        # 注意：newest 是"本地时间"（给人看的），所以期望值必须跟着本地时区算，
+        # 不能写死 "02-05 20:00" —— CI 跑在 UTC 时那会是 12:00，测试就会挂。
+        expected = (
+            datetime(2025, 2, 5, 12, 0, tzinfo=timezone.utc)
+            .astimezone()
+            .strftime("%m-%d %H:%M")
+        )
+        self.assertEqual(report.checks[0].newest, expected)
+        self.assertIn("02-05", report.checks[0].newest, "日期部分不受时区影响，应始终是 02-05")
 
     async def test_partial_failure_does_not_break_others(self):
         subs = [
