@@ -1,0 +1,136 @@
+# ============================================================================
+#  rss-media-hub — 绿联云（UGREEN NAS）Docker「项目 / Compose」专用
+#
+#  用法：
+#    1. 把本文件内容整段粘贴到绿联云 Docker → 项目 → 新建 → Compose
+#    2. 只改下面标了 【必改】 的 6 个值（其余保持默认即可）
+#    3. 部署 → 看日志：出现「Telegram 机器人：@xxx」就是成功了
+#
+#  改完之后要改订阅：编辑 <存储目录>/config/subscriptions.yaml，
+#  30 秒内自动生效，不需要重启容器。
+# ============================================================================
+
+services:
+  rss-media-hub:
+    # 【必改 ①】镜像名必须和 "docker build -t <名字>" 里的名字完全一致！
+    #
+    #   如果本地镜像叫 rss-media-hub:1.0.0，这里就必须写 rss-media-hub:1.0.0。
+    #   写成别的（例如 :latest）会让 Docker 去 Docker Hub 找这个仓库，
+    #   然后报 "pull access denied for rss-media-hub, repository does not exist"。
+    #
+    #   用 docker images | grep rss-media-hub 确认本地镜像的准确名字。
+    image: rss-media-hub:1.0.0
+
+    container_name: rss-media-hub
+
+    # 开机自启 + 崩溃自动拉起
+    restart: unless-stopped
+
+    # 架构：镜像架构必须和 NAS 一致（不一致会报 exec format error）
+    #   绿联云绝大多数机型是 x86_64 → 电脑上直接 docker build 出来的就是 amd64，匹配
+    #   若你是 ARM 机型，用 build-image 脚本加 -Platform linux/arm64 重新导出
+    # 一般不用写 platform；确实需要强制时再打开下面这行：
+    # platform: linux/amd64
+
+    # ------------------------------------------------------------------
+    #  环境变量：绿联界面上会以表单形式列出来，直接改就行
+    # ------------------------------------------------------------------
+    environment:
+      TZ: Asia/Shanghai
+
+      # ---------- 【必改 ②】Telegram ----------
+      # 找 @BotFather 发 /newbot 拿 Token
+      RMH_TG_BOT_TOKEN: "123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      # 私聊填你的 user id；群/频道填 -100xxxxxxxxxx（找 @userinfobot 查）
+      RMH_TG_CHAT_ID: "123456789"
+      # 群里按「话题」分组的 Thread ID，没有就留空
+      RMH_TG_THREAD_ID: ""
+      # 推送时是否带海报，想省流量可设 false
+      RMH_TG_SEND_POSTER: "true"
+      # 国内直连 TG 经常超时，有反代就填，例如 https://tgapi.example.com
+      # 【正向代理】国内直连 Telegram 不通时填这个，例如 http://192.168.31.142:10809
+      # 支持 http:// 与 socks5:// 两种；这是"科学上网"的代理端口
+      RMH_TG_PROXY: ""
+      # 【反向代理】只有你自己用域名反代了 TG 才填，例如 https://tgapi.example.com
+      # 注意区别：这里填的是能直接替换 api.telegram.org 的地址，不是代理端口
+      RMH_TG_API_BASE: ""
+
+      # ---------- 【必改 ③】TMDB ----------
+      # https://www.themoviedb.org/settings/api → 用 API Key (v3 auth) 那串 32 位
+      RMH_TMDB_API_KEY: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      RMH_TMDB_LANGUAGE: "zh-CN"
+      # 【正向代理】国内直连 TMDB 不通时填，通常和 TG 那个填同一个
+      RMH_TMDB_PROXY: ""
+      # 【反向代理】有自建 TMDB 反代才填，例如 https://tmdb.example.com
+      RMH_TMDB_API_BASE: ""
+
+      # ---------- 【必改 ④】Emby / Jellyfin（用来统计已入库集数）----------
+      # 填 NAS 的局域网 IP + 端口；不要用 localhost
+      RMH_EMBY_URL: "http://192.168.1.10:8096"
+      # Emby：后台 → 高级 → API 密钥 → 新建
+      # Jellyfin：控制台 → API 密钥 → 新建
+      RMH_EMBY_API_KEY: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      # 老版本 Emby(<4.7) 需要填用户 ID；新版留空会自动取管理员
+      RMH_EMBY_USER_ID: ""
+      # 分母只算「已播出」的集数，避免连载剧永远追不完
+      RMH_EMBY_COUNT_AIRED_ONLY: "true"
+      # 是否把特别篇(Season 0)也算进分母
+      RMH_EMBY_INCLUDE_SPECIALS: "false"
+      # Emby 用 https 自签证书时保持 false
+      RMH_EMBY_VERIFY_TLS: "false"
+
+      # ---------- 运行参数（一般不用改）----------
+      # RSS 刷新间隔（秒）：想每 2-5 分钟看一次新数据就填 120~300
+      RMH_POLL_INTERVAL: "180"
+      # show（按剧追踪）模式的入库巡检间隔；feed 模式用不到
+      RMH_RECONCILE_INTERVAL: "1800"
+      # 首轮是否静默登记历史条目。
+      # 注意：feed（订阅源全量）模式下一般设 false —— 你要的就是把新条目推过来
+      RMH_SEED_SILENT: "false"
+      # 容器内健康检查端口
+      RMH_HEALTH_PORT: "8080"
+      RMH_LOG_LEVEL: "INFO"
+
+      # ---- 全库扫描（容器内执行 python -m app scan）----
+      # TMDB 结果缓存多久（秒），默认 12 小时
+      RMH_SCAN_CACHE_TTL: "43200"
+      # 扫描并发数，调大更容易被 TMDB 限流
+      RMH_SCAN_CONCURRENCY: "5"
+      # 单次最多扫描多少部剧，0=不限
+      RMH_SCAN_MAX_SERIES: "0"
+
+      # ---- 网页 UI（浏览器打开 http://<NAS IP>:18080/）----
+      # ⚠️ 强烈建议设置访问口令，否则同局域网任何人都能打开并改你的配置
+      RMH_UI_TOKEN: ""
+      # 设成 "false" 可彻底关掉网页 UI（只保留 /healthz）
+      RMH_UI_ENABLED: "true"
+
+      # 容器内程序以这个 uid/gid 运行（默认 1000，对应绿联普通用户）
+      # 若日志报「Permission denied」，把它改成存储目录的属主：
+      # 在绿联终端执行 ls -ln <存储目录> 看第三、四列的编号
+      RMH_UID: "1000"
+      RMH_GID: "1000"
+
+    # ------------------------------------------------------------------
+    #  存储目录：绿联界面上点「添加」选择 NAS 上的文件夹
+    #  用 /volume1/docker/rss-media-hub/... 这种绝对路径最稳
+    # ------------------------------------------------------------------
+    volumes:
+      # config：首次启动会自动生成 subscriptions.yaml（订阅表就在这里改）
+      - /volume1/docker/rss-media-hub/config:/config
+      # state：SQLite 去重记录，删掉会导致历史 RSS 被重新推送一遍
+      - /volume1/docker/rss-media-hub/state:/state
+
+    # ------------------------------------------------------------------
+    #  端口：只映射到本机用于排查，不需要对外网开放
+    #  http://绿联IP:18080/healthz → ok
+    #  http://绿联IP:18080/status  → JSON 进度
+    # ------------------------------------------------------------------
+    ports:
+      - "18080:8080"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

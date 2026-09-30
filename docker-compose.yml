@@ -1,0 +1,62 @@
+# ============================================================================
+#  一条命令启动：  docker compose up -d --build
+#  看日志：        docker compose logs -f
+#  改完配置重载：  docker compose restart
+#  查看状态：      curl http://127.0.0.1:18080/status
+# ============================================================================
+
+services:
+  rss-media-hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rss-media-hub:latest
+    container_name: rss-media-hub
+
+    # 容器崩溃/宿主机重启后自动拉起
+    restart: unless-stopped
+
+    # 密钥放这里（从 .env.example 复制成 .env）
+    env_file:
+      - .env
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      RMH_CONFIG_DIR: /config
+      RMH_STATE_DIR: /state
+      RMH_HEALTH_PORT: "8080"
+      # 首次启动时 entrypoint 会 chown 挂载目录；若你的 NAS 不允许改属主，
+      # 用 PUID/PGID 指定成该目录现有属主即可。
+      RMH_UID: ${PUID:-1000}
+      RMH_GID: ${PGID:-1000}
+
+    volumes:
+      # config：subscriptions.yaml（程序"追完自动退订"会回写这个文件，必须可写；
+      #         首次启动会自动生成带注释的模板）
+      - ./config:/config
+      # state：SQLite 去重记录。用命名卷避免 bind mount 的属主问题；
+      #        想直接看到 db 文件就换成 ./state:/state
+      - rss-media-hub-state:/state
+
+    # 只绑定到本机，供人工排查 /healthz 与 /status；纯后台可整段删掉
+    ports:
+      - "127.0.0.1:18080:8080"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 若要访问局域网 Emby，桥接网络即可；Emby 在宿主机本机时可用：
+    # extra_hosts:
+    #   - "emby.local:host-gateway"
+
+    # 若 Emby 用 https 自签证书，把 CA 放进 ./config/certs 再打开：
+    # volumes:
+    #   - ./config/certs:/certs:ro
+    # environment:
+    #   SSL_CERT_FILE: /certs/ca.pem
+
+volumes:
+  rss-media-hub-state:

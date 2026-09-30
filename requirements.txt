@@ -1,0 +1,6 @@
+# 运行时依赖：只保留必需的几个，镜像小且构建快
+# [socks] 会额外装 socksio，让 RMH_PROXY / RMH_TG_PROXY 等支持 socks5:// 代理
+httpx[socks]==0.27.2   # 异步 HTTP 客户端（RSS / TMDB / Emby / Telegram 全走它）
+PyYAML==6.0.2          # 读取 config.yaml / subscriptions.yaml
+feedparser==6.0.11     # 兼容各种脏 RSS/Atom（PT 站的 RSS 经常不规范）
+tenacity==9.0.0        # 指数退避重试，避免 PT 站/Emby 抖动导致丢通知

@@ -1,0 +1,21 @@
+# 强制关键文件用 LF 换行。
+#
+# 为什么必须写这个：entrypoint.sh 如果在 Windows 上被打包/克隆成 CRLF，
+# 容器启动时 Linux 会把 "#!/bin/sh\r" 当成不存在的解释器，
+# 报 "not found" 并无限重启。这类问题很难查（容器日志只有一行 not found）。
+#
+# 注意：用 `text eol=lf` 而不是 `binary`，这样 checkout 出来也是 LF。
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.py      text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.md      text eol=lf
+Dockerfile text eol=lf
+
+# 压缩包和图片不参与换行转换
+*.zip     binary
+*.png     binary
+*.jpg     binary
+*.tar     binary

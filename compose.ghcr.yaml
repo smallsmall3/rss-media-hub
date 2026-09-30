@@ -1,0 +1,90 @@
+# ============================================================================
+#  rss-media-hub — 用 GitHub Actions 构建好的镜像直接拉取（推荐）
+#
+#  和 compose.yaml 的区别只有一个：image 指向 ghcr.io 上的公开镜像，
+#  不需要在 NAS 上构建，升级只要 `docker compose pull && docker compose up -d`。
+#
+#  用法：
+#    1. 把下面的 <你的GitHub用户名> 全部替换成真实用户名（注意要小写）
+#    2. 改 4 处【必改】：TG Token / chat_id、TMDB Key、Emby 地址与密钥
+#    3. 粘贴到绿联云 Docker → 项目 → 新建 → 部署
+#
+#  升级：
+#    docker compose pull && docker compose up -d
+# ============================================================================
+
+services:
+  rss-media-hub:
+    # 【必改 ①】把 <你的GitHub用户名> 换成你的 GitHub 用户名（必须小写！ghcr 不接受大写）
+    # 镜像可见性：GitHub 仓库 → Packages → rss-media-hub → Package settings → Change visibility → Public
+    image: ghcr.io/<你的GitHub用户名>/rss-media-hub:latest
+
+    container_name: rss-media-hub
+    restart: unless-stopped
+
+    # 仓库里默认同时构建 linux/amd64 和 linux/arm64，绿联云会自动选对的那个，无需指定
+    # platform: linux/amd64
+
+    environment:
+      TZ: Asia/Shanghai
+
+      # ---------- 【必改 ②】Telegram ----------
+      RMH_TG_BOT_TOKEN: "123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      RMH_TG_CHAT_ID: "123456789"
+      # 私聊必须留空；只有群里按话题分组才填
+      RMH_TG_THREAD_ID: ""
+      RMH_TG_SEND_POSTER: "true"
+      # 【正向代理】科学上网端口，例如 http://192.168.31.142:10809，支持 socks5://
+      RMH_TG_PROXY: ""
+      # 【反向代理】自建 TG 反代域名才填，不是代理端口
+      RMH_TG_API_BASE: ""
+
+      # ---------- 【必改 ③】TMDB ----------
+      RMH_TMDB_API_KEY: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      RMH_TMDB_LANGUAGE: "zh-CN"
+      RMH_TMDB_PROXY: ""
+      RMH_TMDB_API_BASE: ""
+
+      # ---------- 【必改 ④】Emby / Jellyfin ----------
+      RMH_EMBY_URL: "http://192.168.31.221:8096"
+      RMH_EMBY_API_KEY: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      RMH_EMBY_USER_ID: ""
+      RMH_EMBY_COUNT_AIRED_ONLY: "true"
+      RMH_EMBY_INCLUDE_SPECIALS: "false"
+      RMH_EMBY_VERIFY_TLS: "false"
+
+      # ---------- 运行参数 ----------
+      # RSS 刷新间隔（秒）：想每 2-5 分钟看一次新数据就填 120~300
+      RMH_POLL_INTERVAL: "180"
+      RMH_RECONCILE_INTERVAL: "1800"
+      # feed（订阅源全量）模式一般设 false：你要的就是把新条目推过来
+      RMH_SEED_SILENT: "false"
+      RMH_HEALTH_PORT: "8080"
+      RMH_LOG_LEVEL: "INFO"
+
+      # ---- 全库扫描（容器内执行 python -m app scan）----
+      RMH_SCAN_CACHE_TTL: "43200"
+      RMH_SCAN_CONCURRENCY: "5"
+      RMH_SCAN_MAX_SERIES: "0"
+
+      # ---- 网页 UI（浏览器打开 http://<NAS IP>:18080/）----
+      # ⚠️ 强烈建议设置访问口令，否则同局域网任何人都能打开并改你的配置
+      RMH_UI_TOKEN: ""
+      RMH_UI_ENABLED: "true"
+
+      # 容器内程序以此 uid/gid 运行；报 Permission denied 就改成存储目录属主编号
+      RMH_UID: "1000"
+      RMH_GID: "1000"
+
+    volumes:
+      - /volume1/docker/rss-media-hub/config:/config
+      - /volume1/docker/rss-media-hub/state:/state
+
+    ports:
+      - "18080:8080"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

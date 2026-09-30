@@ -1,0 +1,13 @@
+state/
+config/
+.testenv/
+.testtmp/
+tests/
+*.pyc
+__pycache__/
+.pytest_cache/
+.git/
+.gitignore
+.env
+docker-compose.yml
+README.md

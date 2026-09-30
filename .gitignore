@@ -1,0 +1,20 @@
+# ---- 密钥与本地状态（绝对不能提交）----
+.env
+config/config.yaml
+config/subscriptions.yaml
+config/*.bak
+state/
+.ci-config/
+.ci-state/
+
+# ---- 开发/测试临时目录 ----
+tests/.tmp/
+.testenv/
+.testtmp/
+.pytest_cache/
+
+# ---- 构建产物 ----
+*.tar
+*.tar.gz
+*.pyc
+__pycache__/

@@ -1,0 +1,363 @@
+"""消息排版：把"发现新种 / 入库进度 / 追完退订"渲染成 Telegram 消息。"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Iterable
+
+import httpx
+
+from .config import Settings, Subscription
+from .db import SubState
+from .emby import EmbyClient, LocalSeries
+from .reconcile import ReconcileResult, build_progress_bar
+from .rss import FeedItem, human_size
+from .telegram import TelegramSender, esc
+
+log = logging.getLogger(__name__)
+
+STATUS_ICON = {
+    "active": "🟡",
+    "done": "✅",
+    "removed": "🗑",
+    "error": "❌",
+}
+
+TMDB_LINK = "https://www.themoviedb.org/tv/{id}"
+
+
+def local_now() -> datetime:
+    return datetime.now(timezone.utc).astimezone()
+
+
+@dataclass
+class ItemView:
+    """推送时需要的条目信息（可直接由 FeedItem 或 DB 行构造）。"""
+
+    title: str
+    download_url: str = ""
+    size_text: str = "-"
+    episode_label: str = ""
+    published_text: str = ""
+    extra: str = ""
+    kind: str = ""          # 剧集 / 电影 / 合集 / 音乐 …
+    icon: str = "📄"
+    badges: list[str] = field(default_factory=list)   # 2160p · HDR · HEVC …
+    rank: int = 0           # 规格高低，用于挑"最好的版本"
+
+    @classmethod
+    def from_feed(cls, item: FeedItem) -> "ItemView":
+        from .release import classify_item, describe_release
+
+        published = ""
+        if item.published:
+            published = item.published.astimezone().strftime("%m-%d %H:%M")
+        tags = describe_release(item.title)
+        kind, icon = classify_item(item.title, has_episode=item.episode is not None)
+        return cls(
+            title=item.title,
+            download_url=item.download_url or item.link,
+            size_text=item.size_text,
+            episode_label=item.episode_label,
+            published_text=published,
+            kind=kind,
+            icon=icon,
+            badges=tags.badges(),
+            rank=tags.quality_rank(),
+        )
+
+    @classmethod
+    def from_row(cls, row: dict) -> "ItemView":
+        from .release import classify_item, describe_release
+
+        title = row.get("title") or ""
+        published = ""
+        raw = row.get("published_at") or ""
+        if raw:
+            published = raw[:16].replace("T", " ")
+        episode_label = row.get("episode") or ""
+        tags = describe_release(title)
+        kind, icon = classify_item(title, has_episode=bool(episode_label))
+        return cls(
+            title=title,
+            download_url=row.get("download_url") or row.get("link") or "",
+            size_text=human_size(row.get("size_bytes")),
+            episode_label=episode_label,
+            published_text=published,
+            kind=kind,
+            icon=icon,
+            badges=tags.badges(),
+            rank=tags.quality_rank(),
+        )
+
+
+class Notifier:
+    def __init__(self, settings: Settings, sender: TelegramSender, library: EmbyClient) -> None:
+        self.settings = settings
+        self.tg = sender
+        self.library = library
+        self._poster_cache: dict[str, bytes | None] = {}
+
+    # ------------------------------------------------------------------
+    # 文本排版
+    # ------------------------------------------------------------------
+    def series_title(self, sub: Subscription, result: ReconcileResult | None = None) -> str:
+        name = sub.name
+        year = sub.year
+        if result and result.series:
+            name = result.series.name or name
+            year = result.series.year or year
+        return f"{name}（{year}）" if year else name
+
+    def progress_line(self, result: ReconcileResult) -> str:
+        bar = build_progress_bar(result.owned, result.total)
+        line = f"{bar} <b>{result.owned}/{result.total}</b> 集"
+        if result.total and result.owned < result.total:
+            line += f"（{result.percent:.0f}%）"
+        return line
+
+    def group_by_episode(
+        self, views: list[ItemView]
+    ) -> list[tuple[str, list[ItemView]]]:
+        """把"同一集的多个版本"归到一组。
+
+        PT 站一集常同时发 2160p/1080p/720p 好几个版本，逐个推会把人烦死。
+        分组后每组只占一块，最好的版本突出显示，其余折成一行。
+        """
+        buckets: dict[str, list[ItemView]] = {}
+        order: list[str] = []
+        for view in views:
+            key = view.episode_label or f"__{view.title}"
+            if key not in buckets:
+                buckets[key] = []
+                order.append(key)
+            buckets[key].append(view)
+        result: list[tuple[str, list[ItemView]]] = []
+        for key in order:
+            group = sorted(buckets[key], key=lambda v: (-v.rank, -len(v.badges)))
+            result.append(("" if key.startswith("__") else key, group))
+        return result
+
+    def render_feed_items(
+        self,
+        sub: Subscription,
+        views: list[ItemView],
+        *,
+        source: str = "RSS 全量",
+    ) -> str:
+        """feed 模式：RSS 有什么推什么，不显示入库进度。
+
+        排版目标：**一眼扫完就知道要不要下**。
+        所以每条做成一个卡片：图标 + 集号 + 规格标签，其次才是体积和链接；
+        同一集的多版本合并成一条，不重复刷屏。
+        """
+        groups = self.group_by_episode(views)
+        lines = [f"📡 <b>{esc(sub.name)}</b>"]
+        if sub.note:
+            lines.append(f"<i>{esc(sub.note)}</i>")
+
+        if len(views) == 1:
+            lines.append(f"🆕 <b>新条目</b> · {esc(source)}")
+        elif len(groups) < len(views):
+            lines.append(f"🆕 <b>{len(groups)} 集 / {len(views)} 个版本</b> · {esc(source)}")
+        else:
+            lines.append(f"🆕 <b>新条目 ×{len(views)}</b> · {esc(source)}")
+
+        for label, group in groups:
+            lines.append("")
+            lines.append(self.item_card(label, group, detailed=len(views) == 1))
+
+        lines.append("")
+        lines.append(f"🕒 {esc(local_now().strftime('%m-%d %H:%M'))}")
+        return "\n".join(lines)
+
+    def item_card(self, label: str, group: list[ItemView], *, detailed: bool = False) -> str:
+        """一张条目卡片。group[0] 是规格最高的那个版本，作为主推。"""
+        if not group:
+            return ""
+        top = group[0]
+        rows: list[str] = []
+
+        # 有集号就用集号做标题（一眼定位），没有集号就直接用标题做标题
+        title_shown = False
+        if label:
+            headline = f"<b>{esc(label)}</b>"
+        else:
+            headline = f"<b>{esc(self.shorten(top.title, 60))}</b>"
+            title_shown = True
+
+        head = f"{top.icon} {headline}"
+        if top.size_text and top.size_text != "-":
+            head += f" · <b>{esc(top.size_text)}</b>"
+        rows.append(head)
+
+        if top.badges:
+            rows.append("   " + esc(" · ".join(top.badges)))
+
+        # 标题信息只补一次：有集号且（只有一条 或 集号看不出是哪部剧）时补
+        if not title_shown and (detailed or (top.kind in {"电影", "合集", "音乐", "图书", "软件"})):
+            rows.append(f"   <i>{esc(self.shorten(top.title, 78))}</i>")
+
+        if top.download_url:
+            rows.append(f"   🔗 <a href=\"{esc(top.download_url)}\">下载</a>")
+
+        # 其余版本折成一行
+        if len(group) > 1:
+            others = []
+            for view in group[1:4]:
+                tag = " ".join(view.badges[:2]) or view.kind or "其他"
+                others.append(f"{esc(tag)} {esc(view.size_text)}")
+            line = "   ↳ 还有 " + " ｜ ".join(others)
+            if len(group) > 4:
+                line += f" 等 {len(group) - 1} 个版本"
+            rows.append(line)
+        return "\n".join(rows)
+
+    @staticmethod
+    def shorten(text: str, limit: int) -> str:
+        text = (text or "").strip()
+        return text if len(text) <= limit else text[: limit - 1] + "…"
+
+    def render_new_items(
+        self,
+        sub: Subscription,
+        views: list[ItemView],
+        result: ReconcileResult | None,
+        *,
+        source: str = "RSS",
+    ) -> str:
+        head = f"🎬 <b>{esc(self.series_title(sub, result))}</b>"
+        lines = [head]
+        if result and result.total:
+            lines.append(self.progress_line(result))
+            if result.missing:
+                total = len(result.missing)
+                lines.append(f"📭 待入库 {total} 集：<code>{esc(result.missing_ranges(limit=6))}</code>")
+        else:
+            lines.append("📊 集数统计：媒体库暂未找到该剧")
+
+        groups = self.group_by_episode(views)
+        if len(views) == 1:
+            lines.append(f"🆕 <b>发现新资源</b> · {esc(source)}")
+        elif len(groups) < len(views):
+            lines.append(f"🆕 <b>{len(groups)} 集 / {len(views)} 个版本</b> · {esc(source)}")
+        else:
+            lines.append(f"🆕 <b>发现 {len(views)} 个新资源</b> · {esc(source)}")
+
+        for label, group in groups:
+            lines.append("")
+            lines.append(self.item_card(label, group, detailed=len(views) == 1))
+
+        lines.append("")
+        lines.append(f"🕒 {esc(local_now().strftime('%Y-%m-%d %H:%M'))}")
+        return "\n".join(lines)
+
+    def render_library_update(
+        self,
+        sub: Subscription,
+        result: ReconcileResult,
+        codes: list[str],
+        items: list[ItemView],
+    ) -> str:
+        lines = [
+            f"📥 <b>{esc(self.series_title(sub, result))}</b> 已入库",
+            self.progress_line(result),
+        ]
+        if codes:
+            lines.append(f"✅ 新入库：<code>{esc('、'.join(codes))}</code>")
+        if result.missing:
+            lines.append(f"📭 待入库：<code>{esc(result.missing_ranges())}</code>")
+        else:
+            lines.append("🎉 该剧已全部入库")
+        if items:
+            grouped = self.group_by_episode(items)
+            lines.append("")
+            lines.append(f"📦 对应资源（{len(grouped)} 条）：")
+            for view in items[:8]:
+                label = view.episode_label or "-"
+                lines.append(f"   • <code>{esc(label)}</code> {esc(self.shorten(view.title, 64))}")
+        lines.append("")
+        lines.append(f"🕒 {esc(local_now().strftime('%Y-%m-%d %H:%M'))}")
+        return "\n".join(lines)
+
+    def render_done(self, sub: Subscription, result: ReconcileResult, *, removed: bool) -> str:
+        lines = [
+            "🏁 <b>订阅完成</b>",
+            f"🎬 {esc(self.series_title(sub, result))}",
+            self.progress_line(result),
+            f"📺 已播出 {result.aired} 集 · 库中 {result.owned} 集",
+        ]
+        if result.tmdb_id:
+            lines.append(f"🔗 <a href=\"{TMDB_LINK.format(id=result.tmdb_id)}\">TMDB 条目</a>")
+        if removed:
+            lines.append("🗑 已自动删除该订阅（remove_when_done = true）")
+        else:
+            lines.append("📌 订阅已标记完成，等待你手动清理")
+        lines.append("")
+        lines.append(f"🕒 {esc(local_now().strftime('%Y-%m-%d %H:%M'))}")
+        return "\n".join(lines)
+
+    def render_status(self, states: list[tuple[Subscription, SubState | None]]) -> str:
+        lines = ["📋 <b>订阅总览</b>", ""]
+        if not states:
+            lines.append("（没有订阅）")
+            return "\n".join(lines)
+        for sub, state in states:
+            if state is None:
+                lines.append(f"⚪️ <b>{esc(sub.name)}</b> — 尚未巡检")
+                continue
+            icon = STATUS_ICON.get(state.state, "⚪️")
+            lines.append(
+                f"{icon} <b>{esc(sub.name)}</b> — {state.owned}/{state.aired or state.total} 集"
+                + (f" · 缺 {esc(state.missing)}" if state.missing else " · 完整")
+            )
+        lines.append("")
+        lines.append(f"🕒 {esc(local_now().strftime('%Y-%m-%d %H:%M'))}")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # 发送
+    # ------------------------------------------------------------------
+    async def _poster(self, series_name: str, result: ReconcileResult | None) -> bytes | None:
+        if not self.settings.telegram.send_poster:
+            return None
+        key = str((result.tmdb_id if result else 0) or series_name)
+        if key in self._poster_cache:
+            return self._poster_cache[key]
+        data: bytes | None = None
+        local: LocalSeries | None = result.local if result else None
+        if local is not None:
+            data = await self.library.poster_bytes(local)
+        if not data and result and result.series and result.series.poster_path:
+            url = self.settings.tmdb.image_base.rstrip("/")
+            if "/t/p/" in url:
+                url = url.split("/t/p/")[0] + "/t/p/w500"
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.get(f"{url}{result.series.poster_path}")
+                    if resp.status_code == 200:
+                        data = resp.content
+            except Exception as exc:  # noqa: BLE001
+                log.debug("下载 TMDB 海报失败：%s", exc)
+        self._poster_cache[key] = data
+        return data
+
+    async def push(
+        self,
+        text: str,
+        *,
+        poster: tuple[str, ReconcileResult | None] | None = None,
+    ) -> bool:
+        if not self.tg.enabled:
+            log.warning("Telegram 未配置，跳过推送：\n%s", text)
+            return False
+        if poster:
+            data = await self._poster(poster[0], poster[1])
+            if data:
+                sent = await self.tg.send_photo(data, caption="")
+                if not sent.ok:
+                    log.debug("发海报失败，退化为纯文本：%s", sent.error)
+        result = await self.tg.send_message(text)
+        return result.ok
