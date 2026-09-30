@@ -4,3 +4,4 @@ httpx[socks]==0.27.2   # 异步 HTTP 客户端（RSS / TMDB / Emby / Telegram �
 PyYAML==6.0.2          # 读取 config.yaml / subscriptions.yaml
 feedparser==6.0.11     # 兼容各种脏 RSS/Atom（PT 站的 RSS 经常不规范）
 tenacity==9.0.0        # 指数退避重试，避免 PT 站/Emby 抖动导致丢通知
+Jinja2==3.1.4          # 通知模板（可配置推送文案，对齐 MoviePilot 模板语法）

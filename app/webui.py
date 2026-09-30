@@ -997,6 +997,20 @@ async function renderSettings(){
   </div>
 
   <div class="card" style="margin-top:14px">
+    <h2>通知模板 <span class="muted" style="font-weight:normal">notify_templates.txt</span></h2>
+    <textarea id="c_templates" rows="16" style="width:100%;font-family:var(--mono,monospace);font-size:12px" placeholder="=== feed_new ===&#10;{&#10;  &quot;text&quot;: &quot;📡 {{name}}&#10;🆕 新条目 ×{{count}}&#10;{{items|join(...)}}&quot;&#10;}&#10;&#10;=== sub_added ===&#10;{ &quot;text&quot;: &quot;🎉 {{title}} ({{year}}) {{season}} 已添加订阅&quot; }"></textarea>
+    <div class="actions">
+      <button class="act" onclick="loadTemplates()">读取</button>
+      <button class="act primary" onclick="saveTemplates()">保存模板</button>
+    </div>
+    <div class="hint">
+      用 <code>=== 事件名 ===</code> 分段，段内是 MoviePilot 同款 <b>字典模板</b>（Jinja2 语法：<code>{{变量}}</code>、<code>{% if %}...{% endif %}</code>）。<br>
+      支持的事件：<code>feed_new</code>（订阅源全量新种）、<code>show_new</code>（按剧新资源）、<code>library_update</code>（入库）、<code>done</code>（追完）、<code>sub_added</code>（添加订阅）。<br>
+      常用变量：<code>title</code> <code>name</code> <code>year</code> <code>season</code> <code>size</code> <code>badges</code> <code>count</code> <code>owned</code> <code>total</code> <code>link</code>。没配的事件退回内置排版。
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
     <h2>运行参数</h2>
     <div class="f2">
       <div><label>RSS 轮询间隔（秒）</label><input id="c_poll" type="number" value="${esc(val('runtime','poll_interval'))}"></div>
@@ -1015,6 +1029,7 @@ async function renderSettings(){
     <div class="hint">配置写入 <code>${esc(d.overrides_file)}</code>，不会改动你手写的 config.yaml。环境变量优先级最高（带 env 标记的字段改了也不生效）。</div>
   </div>`;
   loadMappings();
+  loadTemplates();
 }
 
 function collectChanges(){
@@ -1098,6 +1113,21 @@ async function saveMappings(){
   try {
     const text = $('#c_mappings').value;
     const r = await api.post('/api/labels/mappings', {text: text});
+    toast(r.message || '已保存', 'ok');
+  } catch(e){ toast('保存失败：' + e.message, 'err'); }
+}
+
+async function loadTemplates(){
+  try {
+    const r = await api.get('/api/templates');
+    $('#c_templates').value = r.text || '';
+  } catch(e){ toast('读取失败：' + e.message, 'err'); }
+}
+
+async function saveTemplates(){
+  try {
+    const text = $('#c_templates').value;
+    const r = await api.post('/api/templates', {text: text});
     toast(r.message || '已保存', 'ok');
   } catch(e){ toast('保存失败：' + e.message, 'err'); }
 }

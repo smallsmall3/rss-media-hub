@@ -223,6 +223,8 @@ class WebUI:
             ("POST", "/api/labels/run", self.h_labels_run),
             ("GET", "/api/labels/mappings", self.h_labels_mappings_get),
             ("POST", "/api/labels/mappings", self.h_labels_mappings_post),
+            ("GET", "/api/templates", self.h_templates_get),
+            ("POST", "/api/templates", self.h_templates_post),
             ("GET", "/", self.h_index),
             ("GET", "/index.html", self.h_index),
         ]
@@ -902,6 +904,27 @@ class WebUI:
 
         self.hub.tr_mappings = LabelMappings(_load_mappings(path))
         return {"ok": True, "path": str(path), "message": "映射表已保存"}
+
+    async def h_templates_get(self, headers, query, body) -> dict[str, Any]:
+        """读取通知模板文件（纯文本）内容。"""
+        path = self.hub.settings.notify_templates_file
+        text = ""
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+        return {"ok": True, "path": str(path), "text": text}
+
+    async def h_templates_post(self, headers, query, body) -> dict[str, Any]:
+        """保存通知模板，并热重载（下一次推送就生效）。"""
+        payload = parse_json_body(body)
+        text = payload.get("text")
+        if text is None:
+            raise ValueError("缺少 text 字段（模板文件完整内容）")
+        path = self.hub.settings.notify_templates_file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        # 让 Notifier 下次渲染时重新读模板
+        self.hub.notifier._templates = None
+        return {"ok": True, "path": str(path), "message": "模板已保存"}
 
 
 def _scan_summary(result: ScanResult | None) -> dict[str, Any] | None:

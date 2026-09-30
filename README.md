@@ -509,6 +509,36 @@ m-team.cc=站点/m-team
 
 ---
 
+### 5.8 自定义通知模板（`notify_templates.txt`）
+
+推送文案可以自己改，用 MoviePilot 同款的 **Jinja2 字典模板**（`{% if %}...{% endif %}`、`{{变量}}` 全支持）。想改哪类通知就配哪类，没配的退回内置排版。
+
+在网页 UI「设置」页编辑，或直接改 `config/notify_templates.txt`：
+
+```
+=== sub_added ===
+{ "text": "🎉 {{title}}{% if year %}（{{year}}）{% endif %}{% if season %} {{season}}{% endif %} 已添加订阅" }
+
+=== feed_new ===
+{ "text": "📡 <b>{{name}}</b>\n🆕 新条目 ×{{count}}" }
+```
+
+**支持的事件类型**（`=== 事件名 ===` 分段）：
+
+| 事件名 | 触发场景 |
+|---|---|
+| `feed_new` | 订阅源全量模式发现新种 |
+| `show_new` | 按剧追踪模式发现新资源 |
+| `library_update` | 媒体库新入库 |
+| `done` | 订阅追完 |
+| `sub_added` | 添加订阅确认 |
+
+**常用变量**：`title`（片名）、`name`（订阅名）、`year`、`season`、`size`、`badges`、`count`、`owned`、`total`、`link`、`source`、`time`。
+
+> 模板是一段字典字面量（`{ "text": "..." }`），`text` 字段会作为推送正文；可同时给 `title`（用作海报说明）。渲染失败会退回内置排版，不会把推送搞挂。
+
+---
+
 ## 6. 部署细节
 
 ### 6.1 绿联云（UGREEN NAS）图形界面部署

@@ -168,10 +168,38 @@ class Notifier:
         self.tg = sender
         self.library = library
         self._poster_cache: dict[str, bytes | None] = {}
+        # 可配置模板（可选覆盖）。None 表示"加载失败/未配置"，退回内置排版。
+        self._templates: dict[str, str] | None = None
 
     # ------------------------------------------------------------------
-    # 文本排版
+    # 模板
     # ------------------------------------------------------------------
+    def _load_templates(self) -> dict[str, str]:
+        """惰性加载 notify_templates.txt。"""
+        if getattr(self, "_templates", None) is None:
+            from .templates import load_templates
+
+            path = getattr(getattr(self, "settings", None), "notify_templates_file", None)
+            self._templates = load_templates(path) if path else {}
+        return self._templates
+
+    def _render(self, event: str, context: dict) -> dict[str, str] | None:
+        """按事件类型查模板渲染，返回 {title, text, ...} 字典。
+
+        没配模板或渲染失败返回 None（调用方退回内置排版）。
+        """
+        templates = self._load_templates()
+        template = templates.get(event)
+        if not template:
+            return None
+        from .templates import render_dict_template
+
+        try:
+            return render_dict_template(template, context)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("通知模板 %s 渲染失败，退回内置排版：%s", event, exc)
+            return None
+
     def series_title(self, sub: Subscription, result: ReconcileResult | None = None) -> str:
         name = sub.name
         year = sub.year
@@ -223,6 +251,36 @@ class Notifier:
         同一集的多版本合并成一条，不重复刷屏。
         """
         groups = self.group_by_episode(views)
+
+        # 可配置模板优先（feed_new），命中就不再走内置排版
+        item_ctx = [
+            {
+                "title": v.clean_title(),
+                "episode": v.episode_label,
+                "size": v.size_text if v.size_text != "-" else "",
+                "badges": " · ".join(v.badges),
+                "kind": v.kind,
+                "icon": v.icon,
+                "link": self.link_of(v),
+                "link_label": "下载" if self.link_mode == "download" else "查看",
+            }
+            for v in views
+        ]
+        rendered = self._render(
+            "feed_new",
+            {
+                "name": sub.name,
+                "note": sub.note,
+                "source": source,
+                "count": len(views),
+                "groups": len(groups),
+                "items": item_ctx,
+                "time": local_now().strftime("%m-%d %H:%M"),
+            },
+        )
+        if rendered is not None:
+            return rendered.get("text") or ""
+
         lines = [f"📡 <b>{esc(sub.name)}</b>"]
         if sub.note:
             lines.append(f"<i>{esc(sub.note)}</i>")
@@ -298,6 +356,38 @@ class Notifier:
         *,
         source: str = "RSS",
     ) -> str:
+        groups = self.group_by_episode(views)
+        item_ctx = [
+            {
+                "title": v.clean_title(),
+                "episode": v.episode_label,
+                "size": v.size_text if v.size_text != "-" else "",
+                "badges": " · ".join(v.badges),
+                "kind": v.kind,
+                "icon": v.icon,
+                "link": self.link_of(v),
+                "link_label": "下载" if self.link_mode == "download" else "查看",
+            }
+            for v in views
+        ]
+        rendered = self._render(
+            "show_new",
+            {
+                "name": self.series_title(sub, result),
+                "source": source,
+                "count": len(views),
+                "groups": len(groups),
+                "owned": result.owned if result else 0,
+                "total": result.total if result else 0,
+                "progress": self.progress_line(result) if result and result.total else "",
+                "missing": result.missing_ranges(limit=6) if result and result.missing else "",
+                "items": item_ctx,
+                "time": local_now().strftime("%Y-%m-%d %H:%M"),
+            },
+        )
+        if rendered is not None:
+            return rendered.get("text") or ""
+
         head = f"🎬 <b>{esc(self.series_title(sub, result))}</b>"
         lines = [head]
         if result and result.total:
@@ -308,7 +398,6 @@ class Notifier:
         else:
             lines.append("📊 集数统计：媒体库暂未找到该剧")
 
-        groups = self.group_by_episode(views)
         if len(views) == 1:
             lines.append(f"🆕 <b>发现新资源</b> · {esc(source)}")
         elif len(groups) < len(views):
@@ -331,6 +420,20 @@ class Notifier:
         codes: list[str],
         items: list[ItemView],
     ) -> str:
+        rendered = self._render(
+            "library_update",
+            {
+                "name": self.series_title(sub, result),
+                "progress": self.progress_line(result),
+                "new_codes": "、".join(codes),
+                "missing": result.missing_ranges(),
+                "done": not result.missing,
+                "time": local_now().strftime("%Y-%m-%d %H:%M"),
+            },
+        )
+        if rendered is not None:
+            return rendered.get("text") or ""
+
         lines = [
             f"📥 <b>{esc(self.series_title(sub, result))}</b> 已入库",
             self.progress_line(result),
@@ -353,6 +456,21 @@ class Notifier:
         return "\n".join(lines)
 
     def render_done(self, sub: Subscription, result: ReconcileResult, *, removed: bool) -> str:
+        rendered = self._render(
+            "done",
+            {
+                "name": self.series_title(sub, result),
+                "progress": self.progress_line(result),
+                "aired": result.aired,
+                "owned": result.owned,
+                "tmdb_id": result.tmdb_id or "",
+                "removed": removed,
+                "time": local_now().strftime("%Y-%m-%d %H:%M"),
+            },
+        )
+        if rendered is not None:
+            return rendered.get("text") or ""
+
         lines = [
             "🏁 <b>订阅完成</b>",
             f"🎬 {esc(self.series_title(sub, result))}",
@@ -375,7 +493,21 @@ class Notifier:
         title/year 来自 TMDB（拿得到就用中文名+年份），拿不到退回订阅名。
         season 只在订阅明确指定了季时显示。
         """
-        bits = [esc(title or sub.name)]
+        name = title or sub.name
+        season = f"S{sub.season:02d}" if sub.season else ""
+        rendered = self._render(
+            "sub_added",
+            {
+                "name": name,
+                "title": name,
+                "year": year or "",
+                "season": season,
+            },
+        )
+        if rendered is not None:
+            return rendered.get("text") or ""
+
+        bits = [esc(name)]
         if year:
             bits.append(f"({year})")
         if sub.season:
@@ -427,6 +559,7 @@ class Notifier:
         self._poster_cache[key] = data
         return data
 
+    @property
     def link_mode(self) -> str:
         """当前链接模式。settings 缺失时退回安全的 detail。"""
         settings = getattr(self, "settings", None)

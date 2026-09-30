@@ -564,6 +564,11 @@ class Settings:
         return self.config_dir / "mappings.txt"
 
     @property
+    def notify_templates_file(self) -> Path:
+        """通知模板（可选覆盖内置推送排版）。"""
+        return self.config_dir / "notify_templates.txt"
+
+    @property
     def db_file(self) -> Path:
         return self.state_dir / "rss-media-hub.db"
 
