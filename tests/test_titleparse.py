@@ -217,5 +217,66 @@ class RealWorldTitleTest(unittest.TestCase):
         self.assertEqual(p.year, 1968)
 
 
+class NasRealTitlesTest(unittest.TestCase):
+    """从 NAS 实际抓取到的标题（UBits / CHDBits）—— 最有价值的回归用例。
+
+    这些标题暴露了一个关键 bug：片名区尾部残留技术段
+    （`... Gu Shi 2160p HDRVivid`），拿去搜 TMDB 搜不到，海报就一直没有。
+    原因是我的右往左剥离遇到当时不在词表里的 `HDRVivid` 就停住了。
+    """
+
+    def test_ubits_anime_with_hdrvivid(self):
+        raw = ("[动漫(Animations)]Su Dong Po Yu Hang Zhou De Gu Shi 2026 "
+               "S01E32 2160p WEB-DL HDRVivid H265 AAC-UBWEB")
+        p = parse_release_title(raw)
+        self.assertEqual(p.title, "Su Dong Po Yu Hang Zhou De Gu Shi")
+        self.assertEqual(p.year, 2026)
+        self.assertNotIn("2160p", p.title, "分辨率不能留在片名里")
+        self.assertNotIn("HDRVivid", p.title)
+
+    def test_ubits_anime_group_suffix_not_in_title(self):
+        raw = "[动漫(Animations)]Raised by Demons Panda Li 2026 S01E12 2160p WEB-DL H264 AAC-UBWEB"
+        p = parse_release_title(raw)
+        self.assertEqual(p.title, "Raised by Demons Panda Li")
+        self.assertNotIn("UBWEB", p.title, "站点标识残片不能进片名")
+
+    def test_ubits_long_running_anime(self):
+        p = parse_release_title(
+            "[动漫(Animations)]Swallowed Star 2020 S01E243 2160p WEB-DL H265 AAC-UBWEB"
+        )
+        self.assertEqual(p.title, "Swallowed Star")
+        self.assertEqual(p.year, 2020)
+
+    def test_hq_marker_stripped(self):
+        p = parse_release_title(
+            "[动漫(Animations)]Gu An 2026 S01E11 2160p WEB-DL HQ HDR10 H265 10bit AAC-UBWEB"
+        )
+        self.assertEqual(p.title, "Gu An")
+        self.assertEqual(p.year, 2026)
+
+    def test_chdbits_apple_tv_series(self):
+        for raw, want in (
+            ("[TV Series]Last Seen S01 2160p Apple TV+ WEB-DL DDP.5.1 Atmos DV H.265-CHDWEB", "Last Seen"),
+            ("[TV Series]Women in Blue S02 2160p Apple TV+ WEB-DL DDP.5.1 Atmos DV H.265-CHDWEB", "Women in Blue"),
+            ("[TV Series]Brothers S01 2160p Apple TV+ WEB-DL DDP.5.1 Atmos DV H.265-CHDWEB", "Brothers"),
+        ):
+            p = parse_release_title(raw)
+            self.assertEqual(p.title, want, raw)
+
+    def test_normal_words_not_treated_as_country_codes(self):
+        """`De` 曾被当成德国国家码删掉，导致片名少一个词。"""
+        p = parse_release_title("Su Dong Po Yu Hang Zhou De Gu Shi 2026 S01E32 2160p")
+        self.assertIn("De", p.title)
+
+    def test_single_letter_and_numeric_titles_survive(self):
+        """片名里的单字母与数字不能被当技术段删掉（实测错过）。"""
+        self.assertEqual(parse_release_title("S.W.A.T.2017.1080p.WEB-DL.H264").title, "S W A T")
+        self.assertEqual(parse_release_title("3.10.to.Yuma.2007.1080p.BluRay.x264").title, "3 10 to Yuma")
+        self.assertEqual(
+            parse_release_title("2001.A.Space.Odyssey.1968.2160p.UHD.BluRay.REMUX.HEVC").title,
+            "2001 A Space Odyssey",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

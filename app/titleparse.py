@@ -36,9 +36,11 @@ _TECH_WORDS = {
     "lpcm", "pcm", "mp3", "opus", "ddp5", "dd5",
     # HDR / 色彩
     "hdr", "hdr10", "hdr10+", "dv", "dolby", "vision", "sdr", "hlg", "10bit", "8bit",
+    "hdrvivid", "hdrivid", "vivid", "hdr10plus",
     # 其他常见标记
     "repack", "proper", "internal", "complete", "limited", "remastered", "extended",
     "uncut", "unrated", "criterion", "imax", "ma", "multi", "dual", "chs", "cht", "gb", "big5",
+    "hq", "hd", "sd", "uhq", "web", "fps", "ddp", "dd", "atmos", "dts", "truehd", "aac", "ac3",
     "简", "繁", "简繁", "中字", "国语", "粤语", "双语", "英语", "日语", "无字",
     "subs", "sub", "subtitle", "subtitles", "audio", "rip", "full", "batch", "合集",
     # 季集标记
@@ -176,10 +178,60 @@ def _is_tech_token(cleaned: str, low: str) -> bool:
     # 流媒体平台名（常出现在标题里，但不是片名）
     if low in _PLATFORM_WORDS:
         return True
-    # 站点常见的地区/语言短标记
-    if low in {"hk", "tw", "cn", "jp", "kr", "us", "uk", "fr", "de"}:
+    # 站点常见的地区短标记
+    # ⚠️ 刻意**不**把两位国家码当技术词：`de` / `no` / `it` 这些
+    # 是正常英文词（`De`、`No`），加进来会把片名吃掉 ——
+    # 真实标题 `... Hang Zhou De Gu Shi` 里的 `De` 就这样丢过。
+    # 帧率：60fps / 24fps
+    if re.match(r"^\d{2,3}fps$", low):
         return True
     return False
+
+
+def _drop_single_letter_fragments(keep: list[str]) -> tuple[list[str], bool]:
+    """去掉由点号切碎产生的单字母碎片，但保住真正的单字母片名。
+
+    判据：**只要前面出现过长度 ≥2 的词**，之后的单字母就算碎片。
+
+      `S.W.A.T.`        → S W A T    前面没有长词，单字母簇全部保留
+      `2001 A Space...` → 2001 在前，但 A 后面还有 Space，A 前面是"2001"
+                          （数字，不算长词？）→ 这里按"数字不算长词"处理，保留 A
+      `HDR H265` 切出的 `h` → 前面有 HDR/H265 这类长词 → 删掉
+
+    这样既不会把 `S.W.A.T.` 吃成 `W A T`，也不会让技术串碎片留在片名里。
+    """
+    out: list[str] = []
+    changed = False
+    seen_long_word = False
+    for token in keep:
+        is_single_letter = len(token) == 1 and token.isascii() and token.isalpha()
+        if is_single_letter and seen_long_word:
+            changed = True
+            continue
+        # 长度 ≥2 的字母词才算"长词"；数字不算（否则 `2001 A Space` 的 A 会被误删）
+        if len(token) >= 2 and any(ch.isalpha() for ch in token):
+            seen_long_word = True
+        out.append(token)
+    return out, changed
+
+
+def _is_empty_shell_token(token: str) -> bool:
+    """判断"站点标识残片"。
+
+    发布组名会被点号切碎：`... AAC-UBWEB` 切成 `AAC` 和 `UBWEB`，
+    `UBWEB` 这种全大写、无元音的短串基本就是站点/组名前缀，
+    留在片名里只会污染 TMDB 搜索（真实标题里踩到过）。
+
+    判据保守：只吃"长度 3~8、全 ASCII 字母、全大写、且不含元音"的串，
+    这样 `S.W.A.T.`、`NASA`、`BBC` 这类正常片名不会被误删。
+    """
+    if not (3 <= len(token) <= 7):
+        return False
+    if not token.isascii() or not token.isalpha():
+        return False
+    if not token.isupper():
+        return False
+    return not any(ch in "AEIOUaeiou" for ch in token)
 
 
 def _is_boundary_token(cleaned: str) -> bool:
@@ -266,7 +318,7 @@ def parse_release_title(raw: str) -> ParsedTitle:
             continue
         break  # 遇到不像规格的段落：片名从这里开始
 
-    # 阶段二：idx 及其左边全是片名
+    # 阶段二：idx 及其左边算是"片名区"
     keep = [p.strip("-+") for p in parts[: idx + 1] if p.strip("-+")]
     if not keep:
         return result
@@ -282,12 +334,49 @@ def parse_release_title(raw: str) -> ParsedTitle:
                 break
 
     # 阶段四：年份被摘掉后，它的左边可能还留着季集标记。
-    # 例如 `Another Show S03 2022 1080p` → 摘掉 2022 后剩 `Another Show S03`，
-    # 末尾那个 S03 不是片名的一部分。只从末尾剥，避免误伤
-    # `S.W.A.T.` 这类片名。
     while len(keep) > 1 and _is_boundary_token(keep[-1]):
         keep.pop()
         saw_tech = True
+
+    # 阶段五（关键）：片名区尾部仍可能混着技术段。
+    # 真实情况：`... Gu Shi 2026 S01E32 2160p WEB-DL HDRVivid H265 AAC-UBWEB`
+    # —— 阶段一从右往左剥，剥到 `HDRVivid`（当时还不在词表里）就停住了，
+    # 结果 `2160p` 留在了片名里，拿去搜 TMDB 必然搜不到、也就没有海报。
+    #
+    # 但**不能简单地把所有技术段都删掉** —— 那会误伤片名里的单字母与数字：
+    # `S.W.A.T.` 的 S、`3.10.to.Yuma` 的 3、`2001 A Space Odyssey` 的 2001
+    # （都实测错过）。
+    #
+    # 判据：技术段在片名区里总是**连续出现在末尾**，所以只删
+    # "最后一个非技术段之后"的部分，前面的词一律保护。
+    if len(keep) > 1:
+        last_content = 0
+        for pos, token in enumerate(keep):
+            if not (_is_tech_token(token, token.lower())
+                    or _is_boundary_token(token)
+                    or _is_empty_shell_token(token)):
+                last_content = pos
+        if last_content < len(keep) - 1:
+            saw_tech = True
+            keep = keep[: last_content + 1]
+
+    # 开头残留的多字符技术串（例如顺序被切乱时 `BluRay` 落到最左）。
+    # 刻意**不删**单字母与纯数字：它们常是片名开头
+    # （`S.W.A.T.` 的 S、`3.10.to.Yuma` 的 3、`2001` 的 2001）。
+    while len(keep) > 1:
+        head = keep[0]
+        if len(head) < 2 or head.isdigit():
+            break
+        if not _is_tech_token(head, head.lower()):
+            break
+        keep.pop(0)
+        saw_tech = True
+
+    while keep and _is_tech_token(keep[-1], keep[-1].lower()):
+        keep.pop()
+
+    if not keep:
+        return result
 
     title = " ".join(keep).strip(" -_.")
 
