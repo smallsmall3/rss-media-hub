@@ -193,6 +193,29 @@ class RealWorldTitleTest(unittest.TestCase):
         self.assertEqual(p.title, "某电影")
         self.assertEqual(p.year, 2020)
 
+    def test_nested_brackets_do_not_leak_into_title(self):
+        """`[动漫(Animations)]` 这种括号套括号，不能在前面留下 `]`。
+
+        真实反馈踩到过：简单的 `[^\\]】)）]*` 会在内层 `)` 处提前结束匹配。
+        """
+        raw = "[动漫(Animations)]Su Dong Po Yu Hang Zhou De Gu Shi 2026 S01E32 2160p WEB-DL HDR HEVC AAC-CHD"
+        p = parse_release_title(raw)
+        self.assertEqual(p.title, "Su Dong Po Yu Hang Zhou De Gu Shi")
+        self.assertNotIn("]", p.title)
+        self.assertNotIn("(", p.title)
+
+    def test_year_before_season_marker_is_extracted(self):
+        """年份落在季号左边时也要能提取出来，并把季号从片名里剥掉。"""
+        p = parse_release_title("Another Show S03 2022 1080p WEB-DL")
+        self.assertEqual(p.title, "Another Show")
+        self.assertEqual(p.year, 2022)
+
+    def test_leading_year_of_title_is_kept(self):
+        """`2001 A Space Odyssey` 开头的 2001 是片名，不能当发行年份切掉。"""
+        p = parse_release_title("2001.A.Space.Odyssey.1968.2160p.UHD.BluRay.REMUX.HEVC")
+        self.assertEqual(p.title, "2001 A Space Odyssey")
+        self.assertEqual(p.year, 1968)
+
 
 if __name__ == "__main__":
     unittest.main()

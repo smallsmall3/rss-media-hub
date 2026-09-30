@@ -213,3 +213,55 @@ class FeedItemDetailUrlTest(unittest.TestCase):
 
     def test_empty_when_nothing_derivable(self):
         self.assertEqual(self._item(link="", download="magnet:?xt=urn:btih:abc").detail_url, "")
+
+
+class SecretParamCoverageTest(unittest.TestCase):
+    """密钥参数名要覆盖足够多的站。
+
+    真实反馈：ubits.club 用的是 `downhash`（一个带签名的 JWT 下载令牌），
+    一开始漏掉了 —— 结果这个令牌被当普通参数**带进了详情页链接**。
+    """
+
+    def _secret(self):
+        from app.rss import _has_secret
+
+        return _has_secret
+
+    def test_downhash_is_secret(self):
+        """NexusPHP 系的下载令牌，比 passkey 更隐蔽。"""
+        url = (
+            "https://ubits.club/download.php?id=366321&downhash=92475%7C"
+            "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6MzY2MzIxLCJleHAiOjE3OTA3NDg3MjB9"
+            ".X4P_7Tfc-ngqPMc9--Kr_at0j_Ajlg1MNM_cxegQ3Ek"
+        )
+        self.assertTrue(self._secret()(url), "downhash 必须被识别为密钥")
+
+    def test_downhash_stripped_from_detail_url(self):
+        from app.rss import detail_from_download
+
+        url = (
+            "https://ubits.club/download.php?id=366321&downhash=92475%7C"
+            "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6MzY2MzIxLCJleHAiOjE3OTA3NDg3MjB9"
+            ".X4P_7Tfc-ngqPMc9--Kr_at0j_Ajlg1MNM_cxegQ3Ek"
+        )
+        got = detail_from_download(url)
+        self.assertEqual(got, "https://ubits.club/details.php?id=366321")
+        self.assertNotIn("downhash", got)
+        self.assertNotIn("eyJ0eXAi", got, "JWT 片段绝不能剩下")
+
+    def test_common_pt_secret_params(self):
+        for param in (
+            "passkey", "passphrase", "torrent_pass", "authkey", "downhash",
+            "down_hash", "downkey", "api_key", "apikey", "token", "access_token",
+            "c_secure_pass", "sign", "signature", "sid", "session",
+        ):
+            url = f"https://pt.example/download.php?id=1&{param}=SECRET"
+            self.assertTrue(self._secret()(url), f"{param} 应该被识别为密钥")
+
+    def test_plain_params_not_flagged(self):
+        """普通参数不能被误判，否则详情页会丢掉有用的信息。"""
+        for url in (
+            "https://pt.example/details.php?id=1&type=2",
+            "https://pt.example/details.php?id=1&page=3",
+        ):
+            self.assertFalse(self._secret()(url), f"{url} 不该被判为带密钥")

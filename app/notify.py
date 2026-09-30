@@ -20,7 +20,14 @@ from .telegram import TelegramSender, esc
 log = logging.getLogger(__name__)
 
 _URL_SECRET_RE = re.compile(
-    r"(?:^|[?&])(?:passkey|passphrase|torrent_pass|authkey|api_key|apikey|secret|token)=[^&\s]+",
+    r"(?:^|[?&])(?:"
+    r"passkey|passphrase|torrent_pass|authkey|auth"
+    r"|downhash|down_hash|downkey|down_key"
+    r"|hash|key|api_key|apikey|secret|token|access_token"
+    r"|sid|session|sessionid|phpsessid|uid|userid|user_id"
+    r"|c_secure_uid|c_secure_pass|c_secure_login"
+    r"|sign|signature|sig|code|verify"
+    r")=[^&\s]+",
     re.IGNORECASE,
 )
 

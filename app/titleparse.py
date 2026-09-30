@@ -63,7 +63,10 @@ _RANGE_PATTERN = re.compile(r"(?i)\bS\d{1,2}\s*[-~]\s*S?\d{1,2}\b")
 _YEAR_TOKEN = re.compile(r"^(19\d{2}|20\d{2})$")
 
 # 画质/字幕组常见的方括号标签：[更多资源] [中字] [GROUP]
-_BRACKET_TAG = re.compile(r"[\[【(（][^\]】)）]{0,40}[\]】)）]")
+# 注意要容忍"括号里套括号"：`[动漫(Animations)]` 这种，
+# 简单的 `[^\]】)）]*` 会在内层 `)` 处提前结束，匹配不到整个标签，
+# 结果在片名前留下一个 `]`（真实反馈里踩到过）。
+_BRACKET_TAG = re.compile(r"[\[【][^\[\]【】]*[\]】]|[（(][^（()）]*[）)]")
 
 # 结尾的压制组：-GROUP（前面必须有连字符）
 _TRAILING_GROUP = re.compile(r"-[A-Za-z0-9][A-Za-z0-9._-]{0,24}$")
@@ -267,6 +270,24 @@ def parse_release_title(raw: str) -> ParsedTitle:
     keep = [p.strip("-+") for p in parts[: idx + 1] if p.strip("-+")]
     if not keep:
         return result
+
+    # 阶段三：年份可能落在"片名区"里（例如 `... Shi 2026 S01E32 ...`，
+    # 年份在季号左边）。从右往左找最后一个像年份的段当作发行年份，
+    # 并从片名里去掉 —— 但保留最左边那个（`2001 A Space Odyssey` 的 2001）。
+    if year is None:
+        for pos in range(len(keep) - 1, 0, -1):
+            if _YEAR_TOKEN.match(keep[pos]):
+                year = int(keep.pop(pos))
+                saw_tech = True
+                break
+
+    # 阶段四：年份被摘掉后，它的左边可能还留着季集标记。
+    # 例如 `Another Show S03 2022 1080p` → 摘掉 2022 后剩 `Another Show S03`，
+    # 末尾那个 S03 不是片名的一部分。只从末尾剥，避免误伤
+    # `S.W.A.T.` 这类片名。
+    while len(keep) > 1 and _is_boundary_token(keep[-1]):
+        keep.pop()
+        saw_tech = True
 
     title = " ".join(keep).strip(" -_.")
 

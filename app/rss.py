@@ -68,16 +68,42 @@ NS = {
 
 
 # PT 链接里的密钥参数名。出现在 URL 里就说明"这条链接是私人的"。
+#
+# 这份表宁可宽一点：漏掉一个就可能导致 passkey / 下载令牌被推到聊天里。
+# `downhash` 是 NexusPHP 系的下载令牌（实际是带签名的 JWT，含 id 和过期时间），
+# 比 passkey 更隐蔽，一开始就漏掉了。
 _SECRET_PARAMS = (
     "passkey",
     "passphrase",
     "torrent_pass",
     "authkey",
+    "auth",
+    "downhash",
+    "down_hash",
+    "downkey",
+    "down_key",
+    "hash",
+    "key",
     "api_key",
     "apikey",
-    "key",
     "secret",
     "token",
+    "access_token",
+    "sid",
+    "session",
+    "sessionid",
+    "phpsessid",
+    "uid",
+    "userid",
+    "user_id",
+    "c_secure_uid",
+    "c_secure_pass",
+    "c_secure_login",
+    "sign",
+    "signature",
+    "sig",
+    "code",
+    "verify",
 )
 
 _SECRET_RE = re.compile(
