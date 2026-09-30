@@ -5,7 +5,7 @@
 #  不需要在 NAS 上构建，升级只要 `docker compose pull && docker compose up -d`。
 #
 #  用法：
-#    1. 把下面的 <你的GitHub用户名> 全部替换成真实用户名（注意要小写）
+#    1. 用户名已填好（smallsmall3），直接改下面 4 处【必改】即可
 #    2. 改 4 处【必改】：TG Token / chat_id、TMDB Key、Emby 地址与密钥
 #    3. 粘贴到绿联云 Docker → 项目 → 新建 → 部署
 #
@@ -15,9 +15,9 @@
 
 services:
   rss-media-hub:
-    # 【必改 ①】把 <你的GitHub用户名> 换成你的 GitHub 用户名（必须小写！ghcr 不接受大写）
-    # 镜像可见性：GitHub 仓库 → Packages → rss-media-hub → Package settings → Change visibility → Public
-    image: ghcr.io/<你的GitHub用户名>/rss-media-hub:latest
+    # 镜像已由 GitHub Actions 构建好（amd64 + arm64 双架构）
+    # 每天/每次发布都会更新 latest，所以 pull 就能拿到新版
+    image: ghcr.io/smallsmall3/rss-media-hub:latest
 
     container_name: rss-media-hub
     restart: unless-stopped
