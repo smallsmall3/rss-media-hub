@@ -27,6 +27,7 @@ from .config import ConfigError, Settings, Subscription, load_settings, save_sub
 from .db import Database, ItemRecord, SubState
 from .emby import EmbyClient, EmbyError
 from .notify import ItemView, Notifier
+from .poster import PosterResolver
 from .feedcheck import check_feeds, FeedsReport
 from .gapfill import GapFinder, GapReport
 from .libraryscan import LibraryScanner, ScanResult
@@ -132,6 +133,14 @@ class Hub:
         )
         self.notifier = Notifier(settings, self.tg, self.library)
         self.gapfinder = GapFinder(settings, self.http)
+        # feed 模式的海报：按片名去 TMDB 搜。
+        # 需要 TMDB 可用，且用户没关掉这个开关。
+        self.poster_resolver = PosterResolver(
+            self.tmdb,
+            enabled=bool(settings.telegram.enabled and settings.tmdb.enabled and settings.telegram.feed_poster),
+            image_base=settings.tmdb.image_base,
+            proxy=settings.tmdb.proxy,
+        )
         # 网页 UI 实例，由 _web_server() 挂上；CLI 里可能为 None
         self.web: Any = None
 
@@ -196,6 +205,7 @@ class Hub:
         await self.tg.aclose()
         await self.library.aclose()
         await self.tmdb.aclose()
+        await self.poster_resolver.aclose()
         await self.http.aclose()
         self.db.close()
 
@@ -347,7 +357,13 @@ class Hub:
                 text = self.notifier.render_new_items(sub, views, result, source="PT RSS")
 
             poster = (sub.name, result) if sub.is_show else None
-            ok = await self.notifier.push(text, poster=poster)
+            feed_posters = None
+            if sub.is_feed:
+                # feed 模式：给第一条配一张它自己的海报（按片名搜 TMDB）
+                feed_posters = await self.notifier.poster_items(
+                    sub, views, resolver=self.poster_resolver
+                ) or None
+            ok = await self.notifier.push(text, poster=poster, poster_items=feed_posters)
             if ok:
                 self.stats.notifications += 1
                 await self.db.mark_notified(sub.id, notified_keys, reason="已推送新种")

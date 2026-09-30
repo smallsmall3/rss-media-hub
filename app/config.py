@@ -355,6 +355,9 @@ class TelegramSettings:
     proxy: str = ""  # HTTP/SOCKS 正向代理，例如 http://192.168.31.142:10809
     disable_notification: bool = False
     send_poster: bool = True
+    # feed（订阅源全量）模式是否给每条内容配海报。
+    # 需要 TMDB 才能按片名搜海报；一条推送只发第一张，避免刷屏。
+    feed_poster: bool = True
 
     @property
     def enabled(self) -> bool:
@@ -763,6 +766,7 @@ def load_settings(config_dir: Path | None = None, state_dir: Path | None = None)
         proxy=_env("RMH_TG_PROXY") or _as_str(tg_file.get("proxy")) or global_proxy,
         disable_notification=_env_bool("RMH_TG_SILENT", _as_bool(tg_file.get("disable_notification"), False)),
         send_poster=_env_bool("RMH_TG_SEND_POSTER", _as_bool(tg_file.get("send_poster"), True)),
+        feed_poster=_env_bool("RMH_TG_FEED_POSTER", _as_bool(tg_file.get("feed_poster"), True)),
     )
 
     tmdb = TmdbSettings(
@@ -826,6 +830,7 @@ UI_EDITABLE: dict[str, dict[str, str]] = {
         "api_base": "str",
         "proxy": "str",
         "send_poster": "bool",
+        "feed_poster": "bool",
         "disable_notification": "bool",
     },
     "tmdb": {

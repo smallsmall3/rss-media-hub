@@ -344,15 +344,89 @@ class Notifier:
         self._poster_cache[key] = data
         return data
 
+    async def poster_items(
+        self,
+        sub: Subscription,
+        views: list[ItemView],
+        *,
+        resolver: Any = None,
+        max_items: int = 1,
+    ) -> list[tuple[bytes, str]]:
+        """给 feed 条目准备「每条内容自己的海报」。
+
+        只取前 max_items 条（默认 1）：一条推送里几十条新种时连发几十张图
+        会刷屏并触发 Telegram 限流。其余条目走随后的文字清单。
+
+        caption 只给第一张写完整信息，因为后面的文字清单里有全部条目，
+        重复一遍只是噪音。
+        """
+        if resolver is None or not views:
+            return []
+        out: list[tuple[bytes, str]] = []
+        for view in views[:max_items]:
+            try:
+                data = await resolver.resolve(view.title)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("取海报失败（%s）：%s", view.title, exc)
+                continue
+            if not data:
+                continue
+            caption = self._poster_caption(view)
+            out.append((data, caption))
+        return out
+
+    def _poster_caption(self, view: ItemView) -> str:
+        """海报下面的说明文字。"""
+        from .titleparse import parse_release_title
+
+        parsed = parse_release_title(view.title)
+        lines: list[str] = []
+        name = parsed.title or view.title
+        head = f"<b>{esc(name)}</b>"
+        if parsed.year:
+            head += f"（{parsed.year}）"
+        lines.append(head)
+        if view.episode_label:
+            lines.append(esc(view.episode_label))
+        meta = [x for x in (view.size_text, " · ".join(view.badges[:4])) if x and x != "-"]
+        if meta:
+            lines.append(esc(" · ".join(meta)))
+        return "\n".join(lines)
+
     async def push(
         self,
         text: str,
         *,
         poster: tuple[str, ReconcileResult | None] | None = None,
+        poster_items: list[tuple[bytes, str]] | None = None,
     ) -> bool:
+        """发一条推送。
+
+        poster：show 模式的单张海报（按剧，从 Emby/TMDB 取）。
+        poster_items：feed 模式的「每条内容自己的海报」，
+                      形如 [(图片字节, caption)]。
+
+        feed 模式下**只发第一张图**，其余条目走文字 —— 一条推送几十条新种时，
+        连发几十张图会刷屏，还会撞上 Telegram 的限流。
+        """
         if not self.tg.enabled:
             log.warning("Telegram 未配置，跳过推送：\n%s", text)
             return False
+
+        if poster_items:
+            data, caption = poster_items[0]
+            photo_ok = False
+            if data:
+                sent = await self.tg.send_photo(data, caption=caption)
+                photo_ok = sent.ok
+                if not photo_ok:
+                    log.debug("发海报失败，只发文字：%s", sent.error)
+            if photo_ok and not text.strip():
+                return True
+            # 海报后面跟着其余条目的文字清单
+            result = await self.tg.send_message(text)
+            return photo_ok or result.ok
+
         if poster:
             data = await self._poster(poster[0], poster[1])
             if data:
